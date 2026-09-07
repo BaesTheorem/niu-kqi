@@ -163,6 +163,18 @@ def bleinfo(token: str, sn: str) -> dict:
     return _call("GET", API_HOST + "v5/ble/bleinfo", token=token, query={"sn": sn}) or {}
 
 
+def secret_by_mac(token: str, mac: str) -> dict:
+    """Kick scooters (KQi) hand out their BLE secret by MAC, no binding needed."""
+    return _call("GET", API_HOST + "v5/device/bluetooth_secret", token=token, query={"mac": mac}) or {}
+
+
+def device_info_by_mac(token: str, mac: str) -> list:
+    d = _call("GET", API_HOST + "v5/users_bind/get_device_info_by_mac", token=token, query={"mac_list": mac})
+    if isinstance(d, dict):
+        d = d.get("items") or []
+    return d or []
+
+
 def load_scooter() -> dict:
     sc = load_json(SCOOTER_FILE)
     if not sc or not sc.get("ble", {}).get("mac"):

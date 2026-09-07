@@ -9,7 +9,8 @@ NSBluetoothAlwaysUsageDescription (a bare python process gets SIGABRT'd by TCC).
 Cloud side (one time):
     kqi login you@example.com          # NIU account; password prompted
     kqi scooters                       # vehicles bound to the account
-    kqi setup [--sn SN]                # fetch the scooter's BLE password -> secrets/scooter.json
+    kqi setup --mac auto               # KQi kick scooter: read the MAC over BLE, fetch its password
+    kqi setup [--sn SN]                # bound vehicles (mopeds): fetch by serial
 
 Bluetooth side (scooter powered on, within range):
     kqi find                           # which advertisement is the scooter
@@ -188,10 +189,11 @@ class Scooter:
 
     async def disconnect(self) -> None:
         if self.client and self.client.is_connected:
-            try:
-                await self.client.stop_notify(self.notify_uuid)
-            except Exception:
-                pass
+            if self.notify_uuid:
+                try:
+                    await self.client.stop_notify(self.notify_uuid)
+                except (BleakError, EOFError):
+                    pass  # best-effort cleanup on the way down
             await self.client.disconnect()
 
     def _on_notify(self, _handle, data: bytearray) -> None:
@@ -397,6 +399,122 @@ async def with_scooter(args, fn):
         await s.disconnect()
 
 
+async def cmd_probe(args):
+    """No credentials: connect to a NIU-looking device, list GATT, try unauthenticated reads."""
+    sc = C.load_json(C.SCOOTER_FILE) or {"ble": {}}
+    if args.name:
+        sc.setdefault("ble", {})["name"] = args.name
+    s = Scooter(sc, address=args.address, family=args.family, verbose=args.verbose)
+    hits = await s.find_all(timeout=args.seconds)
+    if not hits:
+        found = await BleakScanner.discover(timeout=args.seconds, return_adv=True)
+        hits = [(1, adv.rssi or -999, dev, adv, f"name {adv.local_name!r}") for dev, adv in found.values()
+                if ((adv.local_name or dev.name or "").upper().startswith("NIU"))]
+        hits.sort(key=lambda h: -h[1])
+    if not hits:
+        print("nothing NIU-looking is advertising")
+        return 1
+    for _score, rssi, dev, adv, why in hits:
+        print(f"{rssi:5d} dBm  {dev.address}  {adv.local_name!r}  {why}")
+    dev = hits[0][2]
+    s.client = BleakClient(dev, timeout=20.0)
+    await s.client.connect()
+    try:
+        print(f"connected; mtu {getattr(s.client, 'mtu_size', '?')}")
+        for svc in s.client.services:
+            tag = f"  <- NIU bleVer {P.SERVICES[svc.uuid.lower()]}" if svc.uuid.lower() in P.SERVICES else ""
+            print(f"service {svc.uuid}{tag}")
+            for ch in svc.characteristics:
+                print(f"    char {ch.uuid}  {','.join(ch.properties)}")
+                if "read" in ch.properties and args.read_all:
+                    try:
+                        val = await s.client.read_gatt_char(ch)
+                        print(f"        = {bytes(val).hex()}  {bytes(val)!r}")
+                    except Exception as e:  # best-effort GATT dump
+                        print(f"        read failed: {e}")
+        svc = next((x for x in s.client.services if x.uuid.lower() in P.SERVICES), None)
+        if svc is None:
+            print("no NIU service; stopping")
+            return 1
+        s.service = svc.uuid.lower()
+        s.ble_ver = P.SERVICES[s.service]
+        s.notify_uuid, s.write_uuid = P.chars_for(s.service)
+        await s.client.start_notify(s.notify_uuid, s._on_notify)
+        s.key = ""
+        names = ["foc_k_gears", "foc_k_rt_speed"]
+        for fam in ([int(args.family)] if args.family != "auto" else [2, 1, 10]):
+            s.family_opt = str(fam)
+            try:
+                print(f"family {fam}: unauthenticated read ->", await s.read(names))
+                break
+            except (P.NiuError, TimeoutError) as e:
+                print(f"family {fam}: {e}")
+        if s.pushes:
+            print("frames seen meanwhile:")
+            for fr in s.pushes:
+                print("  ", fr)
+        await asyncio.sleep(args.linger)
+        while not s.rx.empty():
+            print("  late:", s.rx.get_nowait())
+    finally:
+        await s.disconnect()
+    return 0
+
+
+async def discover_mac(s, seconds=8.0):
+    """macOS hides BLE MACs from scans but exposes them for a *connected* device.
+    Connect to the NIU scooter, then read its address out of system_profiler."""
+    import subprocess
+    dev = await s.find(timeout=seconds)
+    name = getattr(dev, "name", None)
+    s.client = BleakClient(dev, timeout=20.0)
+    await s.client.connect()
+    try:
+        out = subprocess.run(["system_profiler", "SPBluetoothDataType", "-json"],
+                             capture_output=True, text=True, timeout=30).stdout
+        data = json.loads(out) if out else {}
+    finally:
+        await s.disconnect()
+    want = (name or "").upper()
+    best = None
+    for row in _walk_bt(data):
+        addr = row.get("device_address", "")
+        if addr.count(":") != 5:
+            continue
+        label = row.get("__name__", "").upper()
+        if want and want in label:
+            return addr
+        if label.startswith("NIU") and (row.get("__connected__") or best is None):
+            best = addr
+    if best:
+        return best
+    raise BleakError("connected, but could not find the MAC in system_profiler (macOS only)")
+
+
+def _walk_bt(obj, connected=None):
+    """Yield device dicts from system_profiler output, tagged with name/connected."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            child_conn = connected or ("connected" in str(k).lower())
+            if isinstance(v, dict) and "device_address" in v:
+                row = dict(v); row["__name__"] = k; row["__connected__"] = child_conn
+                yield row
+            elif isinstance(v, (dict, list)):
+                yield from _walk_bt(v, child_conn)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _walk_bt(v, connected)
+
+
+async def cmd_mac(args):
+    sc = C.load_json(C.SCOOTER_FILE) or {"ble": {}}
+    if args.name:
+        sc.setdefault("ble", {})["name"] = args.name
+    s = Scooter(sc, verbose=args.verbose)
+    print(await discover_mac(s, seconds=args.seconds))
+    return 0
+
+
 async def cmd_scan(args):
     found = await BleakScanner.discover(timeout=args.seconds, return_adv=True)
     rows = sorted(found.values(), key=lambda da: -(da[1].rssi or -999))
@@ -516,7 +634,7 @@ async def cmd_custom(args):
             if args.max is None:
                 log("custom mode on needs --max KMH")
                 return 2
-            vals["foc_k_def_max_speed"] = int(round(args.max * 10))
+            vals["foc_k_def_max_speed"] = round(args.max * 10)
         await s.write(vals)
         print(f"ok: custom mode {args.state}" + (f", max {args.max} km/h" if args.state == "on" else ""))
     return await with_scooter(args, go)
@@ -537,7 +655,7 @@ async def cmd_monitor(args):
         while time.monotonic() < end:
             try:
                 fr = await asyncio.wait_for(s.rx.get(), 1.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             print(time.strftime("%H:%M:%S"), s.decode_push(fr))
     return await with_scooter(args, go)
@@ -550,7 +668,7 @@ async def cmd_raw(args):
         while time.monotonic() < end:
             try:
                 fr = await asyncio.wait_for(s.rx.get(), max(0.05, end - time.monotonic()))
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 break
             print(fr, s.decode_push(fr) if not args.plain else "")
     return await with_scooter(args, go)
@@ -587,8 +705,51 @@ def cmd_scooters(args):
     return 0
 
 
+def _norm_mac(mac: str) -> str:
+    h = mac.replace(":", "").replace("-", "").strip().upper()
+    if len(h) != 12 or any(c not in "0123456789ABCDEF" for c in h):
+        raise C.CloudError(f"not a MAC address: {mac!r}")
+    return ":".join(h[i:i + 2] for i in range(0, 12, 2))
+
+
+def _setup_by_mac(sess: dict, mac: str) -> int:
+    mac = _norm_mac(mac)
+    info = C.secret_by_mac(sess["token"], mac)
+    if not info.get("blePassword"):
+        log(f"the cloud returned no password for {mac}; is that the scooter's BLE MAC?")
+        return 1
+    di = {}
+    try:
+        rows = C.device_info_by_mac(sess["token"], mac)
+        di = rows[0] if rows else {}
+    except C.CloudError:
+        pass
+    sc = C.load_json(C.SCOOTER_FILE) or {}
+    sc.update({
+        "sn": di.get("sn_id") or di.get("sn") or sc.get("sn", ""),
+        "name": di.get("scooter_name") or di.get("sku_name") or sc.get("name", "NIU KQi"),
+        "product_type": di.get("product_type") or sc.get("product_type", ""),
+        "sku": di.get("sku_name") or sc.get("sku", ""),
+        "ble": {"mac": info.get("bleMac", mac), "password": info.get("blePassword", ""),
+                "aes": info.get("bleAes", ""), "sign": info.get("sign") or info.get("bleSign", ""),
+                "name": sc.get("ble", {}).get("name", ""), "bus_protocol_type": info.get("bus_protocol_type", 0)},
+        "fetched_at": int(time.time()),
+    })
+    C.save_scooter(sc)
+    b = sc["ble"]
+    print(f"saved {C.SCOOTER_FILE}")
+    print(f"  {sc.get('sn') or '(sn unknown)'}  {sc['name']!r}  {sc.get('product_type') or 'kick scooter'}")
+    print(f"  BLE mac {b['mac']}  password {'yes' if b['password'] else 'NONE'}  aes {'yes' if b['aes'] else 'none'}")
+    return 0
+
+
 def cmd_setup(args):
     sess = C.session()
+    if args.mac == "auto":
+        args.mac = asyncio.run(discover_mac(Scooter(C.load_json(C.SCOOTER_FILE) or {"ble": {}})))
+        log(f"discovered MAC {args.mac}")
+    if args.mac:
+        return _setup_by_mac(sess, args.mac)
     items = C.scooters(sess["token"])
     if args.sn:
         pick = next((i for i in items if i.get("sn_id") == args.sn), {"sn_id": args.sn})
@@ -598,7 +759,9 @@ def cmd_setup(args):
         pick = next((i for i in items if i.get("isDefault")), items[0])
         log(f"several vehicles; using {pick.get('sn_id')} ({pick.get('scooter_name')}). Pass --sn to choose.")
     else:
-        log("no vehicles bound to this account; bind the scooter in the NIU app first")
+        log("no vehicle bound to this account. A KQi kick scooter is not bound to the")
+        log("cloud, so fetch its secret by MAC instead:  kqi setup --mac <BLE MAC>")
+        log("(read the MAC while the scooter is connected: see the README).")
         return 1
     sn = pick["sn_id"]
     info = C.bleinfo(sess["token"], sn)
@@ -649,9 +812,11 @@ def main() -> int:
 
     s = sub.add_parser("login", help="log in to the NIU cloud"); s.add_argument("account"); s.add_argument("--password-stdin", action="store_true"); s.set_defaults(fn=cmd_login, sync=True)
     s = sub.add_parser("scooters", help="vehicles bound to the account"); s.set_defaults(fn=cmd_scooters, sync=True)
-    s = sub.add_parser("setup", help="fetch the scooter's BLE credentials"); s.add_argument("--sn"); s.set_defaults(fn=cmd_setup, sync=True)
+    s = sub.add_parser("setup", help="fetch the scooter's BLE credentials"); s.add_argument("--sn"); s.add_argument("--mac", help="fetch by BLE MAC (kick scooters; see README for how to read it)"); s.set_defaults(fn=cmd_setup, sync=True)
     s = sub.add_parser("fields", help="list known field names"); s.add_argument("--all", action="store_true"); s.add_argument("grep", nargs="?"); s.set_defaults(fn=cmd_fields, sync=True)
 
+    s = sub.add_parser("probe", help="no-credential GATT dump + unauthenticated read attempt"); s.add_argument("--name"); s.add_argument("--seconds", type=float, default=8.0); s.add_argument("--read-all", action="store_true"); s.add_argument("--linger", type=float, default=2.0); s.set_defaults(fn=cmd_probe)
+    s = sub.add_parser("mac", help="print the scooter BLE MAC (macOS, connects briefly)"); s.add_argument("--name"); s.add_argument("--seconds", type=float, default=8.0); s.set_defaults(fn=cmd_mac)
     s = sub.add_parser("scan", help="list everything advertising nearby"); s.add_argument("--seconds", type=float, default=8.0); s.set_defaults(fn=cmd_scan)
     s = sub.add_parser("find", help="find the scooter's advertisement"); s.add_argument("--seconds", type=float, default=10.0); s.set_defaults(fn=cmd_find)
     s = sub.add_parser("status", help="read the standard status set"); s.set_defaults(fn=cmd_status)

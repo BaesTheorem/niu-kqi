@@ -59,6 +59,19 @@ if [ "$1" = "--rebuild" ]; then shift; build_app; fi
 [ -d "$APP" ] || build_app
 [ -x "$PY" ] || { echo "kqi: $PY missing; run: uv venv --python 3.13.5 '$DIR/.venv' && uv pip install --python '$PY' bleak cryptography" >&2; exit 1; }
 
+# Cloud-only commands need no Bluetooth, and `open` would drop stdin, the
+# environment, and the tty (so no password prompt): run those directly.
+for a in "$@"; do
+  case "$a" in
+    -*) continue ;;
+    login|scooters|fields|help) exec "$PY" "$DIR/kqi_ble.py" "$@" ;;
+    setup) case " $* " in *" auto "*) break ;;  # `setup --mac auto` needs Bluetooth
+           *) exec "$PY" "$DIR/kqi_ble.py" "$@" ;; esac ;;
+    *) break ;;
+  esac
+done
+case " $* " in *" -h "*|*" --help "*) exec "$PY" "$DIR/kqi_ble.py" "$@" ;; esac
+
 LOG=$(mktemp "${TMPDIR:-/tmp}/kqi.XXXXXX")
 open -n -W -a "$APP" --args "$LOG" "$PWD" "$@"
 cat "$LOG.out" 2>/dev/null || true

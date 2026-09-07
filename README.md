@@ -8,8 +8,9 @@ status, settings, and commands from a Mac.
 Nothing here is documented by NIU. The wire protocol, the authentication handshake, the
 field table, and the command numbers were recovered from the NIU Android app
 (`com.niu.manager` 5.12.2) with jadx. NIU can change any of it in a firmware or app update.
-Status: the code is complete and self-tested, but it has not yet been run against a live
-scooter; expect the first real session to shake out details (see "Known unknowns").
+Status: tested end to end against a live KQi Air (2026-09-06). Login, the by-MAC password
+fetch, the BLE-20 password handshake, status reads, and settings writes all work. A few
+status bits are still unlabeled (see "Known unknowns").
 
 ## Install / invoke
 
@@ -34,18 +35,30 @@ Linux would need a different launcher (no TCC) but the protocol code is portable
 
 ```sh
 kqi login you@example.com      # NIU account (password prompted, or --password-stdin / $NIU_PASSWORD)
+
+# KQi kick scooter (KQi Air): it is not bound to the cloud. Turn it on, then:
+kqi setup --mac auto           # reads its BLE MAC over Bluetooth, fetches the password
+
+# NIU moped, or the kick scooter's MAC known already:
 kqi scooters                   # vehicles bound to the account
-kqi setup [--sn SN]            # pulls the BLE password for the scooter into secrets/scooter.json
+kqi setup [--sn SN]            # bound vehicle, fetch by serial
+kqi setup --mac AA:BB:CC:DD:EE:FF   # kick scooter, MAC given explicitly
 ```
 
-The scooter must already be bound to the account in the NIU app: the cloud only gives the
-Bluetooth password (`v5/ble/bleinfo`) to a bound account. Credentials live in `secrets/`,
-gitignored; see `secrets/README.md`.
+A kick scooter hands out its Bluetooth password by MAC to any logged-in NIU account
+(`v5/device/bluetooth_secret`), so it does not need to be bound. A moped's password comes
+from `v5/ble/bleinfo` and does need the vehicle bound to the account.
+
+macOS hides real BLE MACs from a scan, so `kqi mac` (and `setup --mac auto`) get it by
+connecting briefly and reading it back from `system_profiler`. The name "NIU Link XXXX"
+ends in the last two bytes of the MAC. Credentials land in `secrets/`, gitignored; see
+`secrets/README.md`.
 
 ## Daily use (scooter on, in range)
 
 ```sh
 kqi find                       # which advertisement is the scooter; remembers its address
+kqi mac                        # print the scooter's real BLE MAC (macOS)
 kqi status                     # battery, speed, ride mode, settings bits, firmware, serials
 kqi read foc_k_gears bms_soc_rt
 kqi write foc_k_max_speed 200  # values in the field's raw unit (speeds are km/h x 10)
@@ -90,10 +103,17 @@ kqi fields [--all] [substr]    # the field table
   (1/2 power on/off, 5/6 alarm sound off/on, 9/10/11 daytime light on/off/follow LED,
   14 security-log ack, 100 factory reset).
 
+## Confirmed on the live KQi Air
+
+- Speeds are km/h times ten: `foc_k_max_speed` 320 = 32.0 km/h, the KQi Air's 20 mph cap.
+- The kick scooter is BLE version 20 (service ...`daea51`): AES 20-byte frames, v2 handshake.
+- `bms_soc_rt` is battery percent; `db_k_realtime_status` bit 1 is "powered on".
+- The by-MAC password fetch needs no binding and no ownership; any logged-in account gets it.
+
 ## Known unknowns
 
 - Bit meanings for the status words live in `BITS` in `kqi_ble.py`; entries marked `(?)`
-  are still to be confirmed against a real scooter.
+  are still to be confirmed by toggling them (e.g. which speed-unit index is mph).
 - No headlight on/off command was found in the app; only the daytime-light modes.
 - If the scooter drops the connection right after connecting (GATT status 19 or 22), the
   app calls it "Need 3 Press key": press the power button three times so it accepts a new

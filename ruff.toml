@@ -1,0 +1,12 @@
+# Lint config for niu-kqi. Pinned so the repo lints the same anywhere.
+target-version = "py311"
+line-length = 160
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP", "RUF"]
+ignore = [
+  "UP031",  # percent-formatting is clearer than str.format for fixed-width hex packing
+  "B008",   # default-in-call is fine (argparse patterns)
+  "E702",   # compact "a; b" is intentional in the argparse table and score builder
+  "E501",   # the argparse subparser table is deliberately one line per subcommand
+]
