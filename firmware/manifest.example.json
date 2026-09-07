@@ -1,0 +1,43 @@
+{
+ "images": {
+  "BMS": {
+   "downloadable": false,
+   "installed_version": "KCD36V03",
+   "name": "Battery",
+   "trans_encryption": 1
+  },
+  "DB": {
+   "downloadable": false,
+   "installed_version": "KAC2FV31",
+   "name": "Dashboard",
+   "trans_encryption": 1
+  },
+  "ECU_BT": {
+   "downloadable": false,
+   "installed_version": "KAC2FV31",
+   "name": "Bluetooth",
+   "trans_encryption": 1
+  },
+  "FOC": {
+   "downloadable": false,
+   "installed_version": "KAE13G19",
+   "name": "Motor Control Unit",
+   "trans_encryption": 1
+  },
+  "LCU": {
+   "claimed_prior": "KAB2FV19",
+   "downloadable": true,
+   "file": "KAB2FV20.bin",
+   "installed_version": "KAB2FV20",
+   "md5": "66763f8824ba81ffd38b6098039648a7",
+   "md5_ok": true,
+   "name": "Light Control Unit",
+   "size": 35176,
+   "trans_encryption": 1,
+   "url": "http://fota.niu.com/download/static/upload/20240530/01b869/KAB2FV20.bin",
+   "version": "KAB2FV20"
+  }
+ },
+ "sn": "KRP0XXXXXXXXXXXX",
+ "source": "v5/ota/checkupdate"
+}

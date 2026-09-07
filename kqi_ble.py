@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
+import hashlib
 import json
 import os
 import sys
@@ -790,6 +791,80 @@ def cmd_setup(args):
     return 0
 
 
+def cmd_firmware(args):
+    """check/pull controller firmware through NIU's OTA cloud (v5/ota/checkupdate).
+
+    The KQi Air is not bound to the cloud, so we identify it by serial: its
+    binding-QR content (secrets/scooter.json -> bind.product_sn), or --sn.  The
+    BLE link cannot read firmware back out of the scooter; the cloud is the only
+    place an image lives, and only controllers NIU has actually shipped an OTA
+    update for have a downloadable image (on this KQi Air, just the LCU).
+    """
+    sc = C.load_scooter()
+    sn = args.sn or sc.get("sn") or (sc.get("bind") or {}).get("product_sn")
+    if not sn:
+        log("no serial known; pass --sn (a kick scooter's serial is its binding-QR content)")
+        return 1
+    sess = C.session()
+    installed = C.ota_installed_versions(sess["token"], sn)
+    if not installed:
+        log(f"the cloud reported no controllers for serial {sn!r}")
+        return 1
+
+    if args.action == "check":
+        if args.json:
+            print(json.dumps({"sn": sn, "installed": installed}, indent=1))
+            return 0
+        print(f"scooter {sn}")
+        for dt, info in installed.items():
+            print(f"  {dt:<7} {info['name']:<20} {info['version']}")
+        return 0
+
+    outdir = args.out or os.path.join(os.path.dirname(os.path.abspath(__file__)), "firmware")
+    os.makedirs(outdir, exist_ok=True)
+    mpath = os.path.join(outdir, "manifest.json")
+    manifest = C.load_json(mpath) or {}
+    images = manifest.get("images") or {}
+    keep = ("downloadable", "version", "url", "claimed_prior", "size", "md5", "md5_ok", "file")
+    got = 0
+    for dt, info in installed.items():
+        prev = images.get(dt) or {}
+        rec = {"name": info["name"], "installed_version": info["version"],
+               "trans_encryption": info["trans_encryption"], "downloadable": False}
+        have = bool(prev.get("file") and prev.get("version") == info["version"]
+                    and os.path.exists(os.path.join(outdir, prev["file"])))
+        if have and not args.refresh:
+            rec.update({k: prev[k] for k in keep if k in prev})
+            images[dt] = rec
+            print(f"  {dt:<7} {info['version']:<10} kept {prev['file']} (md5 {'ok' if prev.get('md5_ok') else '?'})")
+            continue
+        img = C.ota_find_image(sess["token"], sn, dt, info["version"])
+        if img:
+            data = C.ota_download(img["url"])
+            md5 = hashlib.md5(data).hexdigest()
+            ok = (not img["md5"]) or md5 == img["md5"]
+            dest = os.path.join(outdir, f"{img['version'] or dt}.bin")
+            with open(dest, "wb") as f:
+                f.write(data)
+            rec.update({"downloadable": True, "version": img["version"], "url": img["url"],
+                        "claimed_prior": img["claimed"], "size": len(data), "md5": md5,
+                        "md5_ok": ok, "file": os.path.basename(dest)})
+            got += 1
+            print(f"  {dt:<7} {img['version']:<10} {len(data):>7} B  md5 {'ok' if ok else 'MISMATCH!'}  -> {dest}")
+        elif have:
+            rec.update({k: prev[k] for k in keep if k in prev})
+            print(f"  {dt:<7} {info['version']:<10} no new offer; kept {prev['file']}")
+        else:
+            print(f"  {dt:<7} {info['version']:<10} no image offered (up to date, or NIU is throttling)")
+        images[dt] = rec
+    manifest.update({"sn": sn, "fetched_at": int(time.time()), "source": "v5/ota/checkupdate", "images": images})
+    with open(mpath, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=1, sort_keys=True)
+        f.write("\n")
+    print(f"wrote {mpath}  ({got} newly downloaded)")
+    return 0
+
+
 def cmd_fields(args):
     rows = sorted(P.FIELDS.items()) if args.all else sorted(P.KCONFIG.items())
     for name, spec in rows:
@@ -814,6 +889,7 @@ def main() -> int:
     s = sub.add_parser("scooters", help="vehicles bound to the account"); s.set_defaults(fn=cmd_scooters, sync=True)
     s = sub.add_parser("setup", help="fetch the scooter's BLE credentials"); s.add_argument("--sn"); s.add_argument("--mac", help="fetch by BLE MAC (kick scooters; see README for how to read it)"); s.set_defaults(fn=cmd_setup, sync=True)
     s = sub.add_parser("fields", help="list known field names"); s.add_argument("--all", action="store_true"); s.add_argument("grep", nargs="?"); s.set_defaults(fn=cmd_fields, sync=True)
+    s = sub.add_parser("firmware", help="check/pull controller firmware via NIU's OTA cloud"); s.add_argument("action", choices=["check", "pull"]); s.add_argument("--sn", help="serial (kick scooters: the binding-QR content)"); s.add_argument("--out", help="output dir for pull (default: firmware/)"); s.add_argument("--refresh", action="store_true", help="re-download even if the image is already present"); s.set_defaults(fn=cmd_firmware, sync=True)
 
     s = sub.add_parser("probe", help="no-credential GATT dump + unauthenticated read attempt"); s.add_argument("--name"); s.add_argument("--seconds", type=float, default=8.0); s.add_argument("--read-all", action="store_true"); s.add_argument("--linger", type=float, default=2.0); s.set_defaults(fn=cmd_probe)
     s = sub.add_parser("mac", help="print the scooter BLE MAC (macOS, connects briefly)"); s.add_argument("--name"); s.add_argument("--seconds", type=float, default=8.0); s.set_defaults(fn=cmd_mac)

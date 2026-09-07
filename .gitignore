@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 secrets/*
 !secrets/README.md
+
+# firmware: vendor binaries and derived disassembly are not redistributed
+firmware/*.bin
+firmware/*.asm
+firmware/manifest.json

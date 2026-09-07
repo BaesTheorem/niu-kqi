@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -173,6 +174,100 @@ def device_info_by_mac(token: str, mac: str) -> list:
     if isinstance(d, dict):
         d = d.get("items") or []
     return d or []
+
+
+# ----------------------------------------------------------------------------- OTA / firmware
+
+# Controller types the KQi cloud tracks for a kick scooter.  The app derives
+# these from the vehicle's status fields (foc_s_ver -> FOC, db_sw_ver -> DB,
+# bms_s_ver -> BMS, plus the light and Bluetooth units); see OtaDeviceType in
+# the decompiled app.  checkupdate happily reports on any subset.
+OTA_DEVICE_TYPES = ("FOC", "DB", "BMS", "LCU", "ECU_BT")
+
+
+def ota_checkupdate(token: str, sn: str, devices: list[dict], timeout: int = 30) -> dict:
+    """POST v5/ota/checkupdate. devices = [{devicetype, soft_version, hard_version}].
+
+    The server compares each claimed soft_version against the newest release it
+    has for that controller and, when something newer exists AND the claimed
+    version is a real prior release, fills in a download url + md5 + size.  It
+    also echoes the controller's *installed* version for any type you send with
+    an unknown version, which is how we learn what is actually on the scooter.
+    Returns the reply's `data` object (with an `items` list).
+    """
+    body = json.dumps({"sn": sn, "devices": devices}).encode("utf-8")
+    req = urllib.request.Request(API_HOST + "v5/ota/checkupdate", data=body,
+                                 method="POST", headers=_headers(token, json_body=True))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            txt = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        txt = e.read().decode("utf-8", errors="replace")
+        try:
+            j = json.loads(txt)
+        except ValueError:
+            raise CloudError(f"HTTP {e.code} from ota/checkupdate: {txt[:200]}") from None
+        raise CloudError(f"HTTP {e.code}: {j.get('desc') or txt[:200]}") from None
+    try:
+        j = json.loads(txt)
+    except ValueError:
+        raise CloudError(f"non-JSON reply from ota/checkupdate: {txt[:200]}") from None
+    if j.get("status", 0) != 0:
+        raise CloudError(f"NIU says: {j.get('desc') or j} (status {j.get('status')})")
+    return j.get("data") or {}
+
+
+def ota_installed_versions(token: str, sn: str) -> dict:
+    """Read the installed firmware version of every controller the cloud tracks.
+
+    checkupdate echoes back your claimed version for any controller you send, so
+    to learn the *installed* versions we send an empty device list: the server
+    then volunteers its full known set (FOC, DB, BMS, LCU, ECU_BT on a KQi Air)
+    with the real versions.  Returns {devicetype: {version, name,
+    trans_encryption}}."""
+    data = ota_checkupdate(token, sn, [])
+    out: dict = {}
+    for it in data.get("items", []):
+        v = it.get("soft_version") or ""
+        if v and v != "0.0.0":
+            out[it["devicetype"]] = {"version": v, "name": it.get("devicetype_name", ""),
+                                     "trans_encryption": it.get("trans_encryption", 0)}
+    return out
+
+
+def _prior_versions(ver: str, span: int = 40):
+    """NIU version tags end in a decimal counter (KAB2FV20 -> 20).  Yield the
+    counter decremented, keeping the tag's width, down to 0.  checkupdate only
+    offers an image when the claimed version is a *real* earlier release, so we
+    walk down from installed-1 until one is recognised."""
+    m = re.match(r"^(.*?)(\d+)$", ver)
+    if not m:
+        return
+    pre, digits = m.group(1), m.group(2)
+    num, width = int(digits), len(digits)
+    for n in range(num - 1, max(-1, num - span - 1), -1):
+        yield f"{pre}{n:0{width}d}"
+
+
+def ota_find_image(token: str, sn: str, devicetype: str, installed_version: str) -> dict | None:
+    """Sweep claimed versions below `installed_version` until checkupdate hands
+    back a download url for `devicetype`.  Returns {claimed, version, url, size,
+    md5} or None if the cloud has no published image for it."""
+    for claim in _prior_versions(installed_version):
+        data = ota_checkupdate(token, sn, [{"devicetype": devicetype,
+                                            "soft_version": claim, "hard_version": ""}])
+        for it in data.get("items", []):
+            if it.get("devicetype") == devicetype and it.get("url"):
+                return {"claimed": claim, "version": it.get("soft_version", ""),
+                        "url": it["url"], "size": int(it.get("size", 0)), "md5": it.get("md5", "")}
+    return None
+
+
+def ota_download(url: str, timeout: int = 60) -> bytes:
+    """Fetch a firmware image from NIU's fota CDN (http://fota.niu.com/...)."""
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
 
 
 def load_scooter() -> dict:

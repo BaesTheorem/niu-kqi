@@ -74,6 +74,8 @@ kqi cmd 7 | kqi cmd --db 9     # any foc_k_cmd / db_k_cmd number
 kqi monitor --seconds 120      # frames the scooter pushes by itself
 kqi raw <hex>                  # send one frame, print replies
 kqi fields [--all] [substr]    # the field table
+kqi firmware check             # installed firmware version of every controller
+kqi firmware pull              # download what NIU will serve (verifies md5) -> firmware/
 ```
 
 `--json` on `status`/`read`, `-v` to print every frame, `-y` to skip confirmations,
@@ -110,6 +112,21 @@ kqi fields [--all] [substr]    # the field table
 - `bms_soc_rt` is battery percent; `db_k_realtime_status` bit 1 is "powered on".
 - The by-MAC password fetch needs no binding and no ownership; any logged-in account gets it.
 
+## Firmware
+
+A KQi Air is five controllers, each with its own firmware: motor (`FOC`),
+dashboard (`DB`), battery (`BMS`), light unit (`LCU`) and Bluetooth (`ECU_BT`).
+The BLE link can read each one's version but cannot dump the image; the image
+only lives in NIU's cloud. `kqi firmware check` lists the installed versions;
+`kqi firmware pull` fetches what the cloud will serve into `firmware/`.
+
+NIU's `v5/ota/checkupdate` is a version diff, so it only returns a download URL
+when you claim a real release older than the newest published one. `pull` reads
+the installed versions, walks each down until the server offers an image, and
+verifies its md5. On a current KQi Air only the light unit has a published image
+(the rest are at factory versions with no OTA update). The images are a 16-bit
+big-endian M-CORE-family core; see `firmware/ANALYSIS.md`.
+
 ## Known unknowns
 
 - Bit meanings for the status words live in `BITS` in `kqi_ble.py`; entries marked `(?)`
@@ -127,5 +144,8 @@ kqi fields [--all] [substr]    # the field table
 - `niu_proto.py` -- frames, checksum, CRC, AES, handshake math, field encode/decode. `python niu_proto.py` runs a self-test.
 - `niu_cloud.py` -- login (md5 password, oauth2 token), scooter list, detail, `bleinfo`.
 - `data/fields.json` -- field table extracted from the app.
+- `firmware/` -- controller-firmware fetch (`firmware check`/`pull`), the OTA
+  manifest, and the reverse-engineering notes (`ANALYSIS.md`). Images and disasm
+  are gitignored (NIU's code); `manifest.example.json` records md5s so a pull verifies.
 - `secrets/` -- gitignored credentials.
 - `bin/kqi` -- the macOS launcher (builds the app bundle, runs the CLI inside it).
