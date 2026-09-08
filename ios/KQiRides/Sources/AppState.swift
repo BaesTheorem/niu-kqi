@@ -148,27 +148,63 @@ final class AppState: ObservableObject {
     /// field cannot blank the whole screen.
     static let statusGroups: [[String]] = [
         ["bms_soc_rt", "foc_k_rt_speed", "foc_k_gears"],
-        ["foc_k_max_speed", "foc_k_def_max_speed"],
+        // Speed limits are read one at a time. Grouped, a single unsupported
+        // field shifts every later value in the reply, and a misaligned read
+        // still parses cleanly, so it arrives looking like data.
+        ["foc_k_max_speed"],
+        ["foc_k_def_max_speed"],
+        ["foc_k_assist_max_speed"],
+        ["foc_k_assist_def_max_speed"],
+        ["foc_k_no_zero_start"],
         ["db_k_estimated_mileage", "db_k_timestamp"],
         ["foc_k_function_status1", "db_k_function_status"],
         ["db_k_realtime_status", "db_k_f_code"],
-        // The rest of what the vendor app's kick-scooter screens drive.
-        ["foc_k_throttle_mode_set", "foc_k_no_zero_start", "foc_k_automatic_shutdown_en"],
-        ["foc_k_assist_max_speed", "foc_k_assist_def_max_speed"],
+        ["foc_k_throttle_mode_set", "foc_k_automatic_shutdown_en"],
         ["foc_k_decorative_light_mode"],
         ["db_k_sn", "db_k_sw_ver", "db_k_hw_ver"],
         ["foc_k_sn", "foc_k_s_ver", "foc_k_h_ver"],
     ]
 
+    /// What a field is allowed to contain. A parse that succeeds is not the same
+    /// as a reading that is real: an unsupported field answers 0xFFFF, and a
+    /// misaligned reply decodes to a number just as happily as a good one. A
+    /// KQi Air does not travel at 6553 km/h, so anything outside these bounds is
+    /// dropped rather than shown.
+    static let plausible: [String: ClosedRange<Int>] = [
+        "foc_k_max_speed": 0...1000,            // km/h x10, so 100 km/h
+        "foc_k_def_max_speed": 0...1000,
+        "foc_k_assist_max_speed": 0...1000,
+        "foc_k_assist_def_max_speed": 0...1000,
+        "foc_k_no_zero_start": 0...1000,
+        "foc_k_rt_speed": 0...1000,
+        "bms_soc_rt": 0...100,
+        "foc_k_throttle_mode_set": 0...16,
+        "foc_k_gears": 0...16,
+        "foc_k_decorative_light_mode": 0...16,
+        "db_k_f_code": 0...255,
+        "db_k_estimated_mileage": 0...100_000,
+    ]
+
+    static func isPlausible(_ name: String, _ v: NIUProto.Value) -> Bool {
+        guard let range = plausible[name] else { return true }
+        guard let n = v.intValue else { return true }
+        return range.contains(n)
+    }
+
     func refreshStatus() async {
         guard ble.state == .ready else { return }
         for group in Self.statusGroups {
-            if let vals = try? await ble.read(group) {
+            let vals = (try? await ble.read(group)) ?? []
+            // Retry singly when the group failed OR when anything in it came
+            // back out of range, because that is what a shifted reply looks like.
+            let suspect = vals.isEmpty || vals.contains { !Self.isPlausible($0.0, $0.1) }
+            if !suspect {
                 for (k, v) in vals { live[k] = v }
-            } else {
-                for f in group {
-                    if let v = try? await ble.read([f]) { for (k, vv) in v { live[k] = vv } }
-                }
+                continue
+            }
+            for f in group {
+                guard let one = try? await ble.read([f]) else { continue }
+                for (k, v) in one where Self.isPlausible(k, v) { live[k] = v }
             }
         }
     }

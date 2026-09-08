@@ -54,11 +54,23 @@ struct SettingsView: View {
         .onChange(of: app.live.count) { _, _ in syncSliders() }
     }
 
+    /// A Slider whose bound value sits outside its range still renders that value
+    /// as text, so a bad reading shows up as a number rather than as an obviously
+    /// broken control. Clamp on the way in.
     private func syncSliders() {
-        if let v = app.live["foc_k_def_max_speed"]?.intValue { customMax = u.speed(Double(v) / 10) }
-        if let v = app.live["foc_k_assist_max_speed"]?.intValue { assistMax = u.speed(Double(v) / 10) }
-        if let v = app.live["foc_k_no_zero_start"]?.intValue { kickStart = u.speed(Double(v) / 10) }
+        func take(_ field: String, into target: inout Double, _ range: ClosedRange<Double>) {
+            guard let v = app.live[field]?.intValue else { return }
+            let shown = u.speed(Double(v) / 10)
+            guard shown.isFinite else { return }
+            target = min(max(shown, range.lowerBound), range.upperBound)
+        }
+        take("foc_k_def_max_speed", into: &customMax, customRange)
+        take("foc_k_assist_max_speed", into: &assistMax, assistRange)
+        take("foc_k_no_zero_start", into: &kickStart, 1...10)
     }
+
+    private var customRange: ClosedRange<Double> { u == .metric ? 5...32 : 3...20 }
+    private var assistRange: ClosedRange<Double> { u == .metric ? 3...10 : 2...6 }
 
     // MARK: - display (works with no scooter connected)
 
@@ -216,7 +228,7 @@ struct SettingsView: View {
             Panel(padding: 0) {
                 VStack(spacing: 0) {
                     sliderRow(title: "Custom mode top speed", value: $customMax,
-                              range: u == .metric ? 5...32 : 3...20, unit: u.speedUnit) {
+                              range: customRange, unit: u.speedUnit) {
                         try await app.ble.setCustomMode(on: true, maxKmh: u.toKmh(customMax))
                         return "Custom mode on, top speed \(Int(customMax)) \(u.speedUnit)"
                     }
@@ -228,7 +240,7 @@ struct SettingsView: View {
                     .padding(.horizontal, 16).padding(.bottom, 14)
                     Divider().overlay(T.outline)
                     sliderRow(title: "Walk assist speed", value: $assistMax,
-                              range: u == .metric ? 3...10 : 2...6, unit: u.speedUnit) {
+                              range: assistRange, unit: u.speedUnit) {
                         try await app.ble.write([("foc_k_assist_max_speed", Int((u.toKmh(assistMax) * 10).rounded()))])
                         return "Walk assist set"
                     }
