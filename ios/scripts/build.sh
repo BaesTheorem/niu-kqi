@@ -23,6 +23,10 @@ fi
 ICON=KQiRides/Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png
 [[ -f $ICON ]] || ./scripts/make-icon.sh
 
+# Icon names resolve to codepoints at build time; a typo fails here rather than
+# shipping as the literal word in the middle of the UI.
+python3 scripts/make-icon-map.py
+
 xcodegen generate
 
 if [[ "${1:-}" == "--device" ]]; then

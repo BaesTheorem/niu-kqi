@@ -165,6 +165,49 @@ actor NIUCloud {
         return out.sorted { $0.startTime > $1.startTime }
     }
 
+    // MARK: - Smart Start (proximity unlock)
+
+    /// Smart Start is BLE proximity unlock: the scooter wakes and unlocks when
+    /// your phone is close enough. "Close enough" is an RSSI threshold in dBm,
+    /// not metres, so a larger negative number is a LONGER range.
+    struct SmartKeyConfig: Codable {
+        let smartKeyRange: Int          // currently selected threshold, dBm
+        let bleSensingRange: String     // the selectable thresholds, e.g. "-55,-67,-80"
+        let autoOffDuration: Int
+        let autoOffValueArray: [Int]
+        let curSelectModeId: Int
+
+        enum CodingKeys: String, CodingKey {
+            case smartKeyRange = "smart_key_range"
+            case bleSensingRange = "ble_sensing_range"
+            case autoOffDuration = "auto_off_duration"
+            case autoOffValueArray = "auto_off_value_array"
+            case curSelectModeId = "cur_select_mode_id"
+        }
+
+        /// Thresholds nearest-first, so index 0 is the shortest unlock range.
+        var ranges: [Int] {
+            bleSensingRange.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+                .sorted(by: >)
+        }
+    }
+
+    func smartKey(token: String, sn: String) async throws -> SmartKeyConfig {
+        var c = URLComponents(string: apiHost + "v5/smart_key/distance_sensing_config")!
+        c.queryItems = [URLQueryItem(name: "sn", value: sn)]
+        let data = try await request("GET", c.url!, token: token)
+        let raw = try JSONSerialization.data(withJSONObject: data)
+        return try JSONDecoder().decode(SmartKeyConfig.self, from: raw)
+    }
+
+    /// Settings on the vehicle record go through one generic setter.
+    /// The server refuses with 1322 unless the scooter is reachable, so this
+    /// wants the scooter awake even though the call itself is cloud-side.
+    func setVehicleSetting(token: String, sn: String, type: String, value: Int) async throws {
+        _ = try await request("POST", URL(string: apiHost + "v5/users_bind/setting")!, token: token,
+                              json: ["sn": sn, "type": type, "value": value])
+    }
+
     // MARK: - firmware
 
     static let otaDeviceTypes = ["FOC", "DB", "BMS", "LCU", "ECU_BT"]

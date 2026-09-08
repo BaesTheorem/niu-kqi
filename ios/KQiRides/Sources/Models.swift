@@ -44,9 +44,22 @@ struct Ride: Codable, Identifiable {
     var start: Date { Self.corrected(startTime) }
     var end: Date { Self.corrected(endTime) }
 
-    /// A ride that gained charge was not a ride: it is a charging session the
-    /// scooter logged as one. Negative consumption is the giveaway.
-    var isChargingSession: Bool { (powerConsumption ?? 0) < 0 }
+    /// Distance over the record's own duration. Sits well below `avespeed` on a
+    /// normal ride because avespeed excludes stops, so it is only meaningful as
+    /// a "was this thing moving at all" check.
+    var impliedKmh: Double {
+        ridingtime > 0 ? km / (Double(ridingtime) / 3600) : 0
+    }
+
+    /// A record that gained charge was not a ride: it is a charging session the
+    /// scooter logged as a track. Battery going UP is conclusive. A long,
+    /// effectively stationary record that drew nothing is the same thing seen
+    /// through integer rounding, where a small gain reports as zero.
+    var isChargingSession: Bool {
+        let used = powerConsumption ?? 0
+        if used < 0 { return true }
+        return used == 0 && ridingtime > 1200 && impliedKmh < 5
+    }
 
     /// The real calendar day, in the phone's timezone.
     var day: Date { Calendar.current.startOfDay(for: start) }

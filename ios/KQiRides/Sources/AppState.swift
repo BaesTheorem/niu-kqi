@@ -44,6 +44,10 @@ final class AppState: ObservableObject {
     /// Live values read over BLE, keyed by field name.
     @Published var live: [String: NIUProto.Value] = [:]
 
+    /// Smart Start (proximity unlock) config, which lives in the cloud rather
+    /// than on the scooter.
+    @Published var smartKey: NIUCloud.SmartKeyConfig?
+
     /// Display units, remembered between launches. Imperial by default: the
     /// scooter is ridden in the US even though it reports metric on the wire.
     @Published var units: Units = Units(rawValue: UserDefaults.standard.string(forKey: "units") ?? "") ?? .imperial {
@@ -118,6 +122,7 @@ final class AppState: ObservableObject {
             if let sn = scooter?.snId {
                 ble.creds = try? await NIUCloud.shared.bleInfo(token: token, sn: sn)
                 rides = try await NIUCloud.shared.allRides(token: token, sn: sn)
+                smartKey = try? await NIUCloud.shared.smartKey(token: token, sn: sn)
                 if let d = try? await NIUCloud.shared.detail(token: token, sn: sn) {
                     odometerKm = (d["mileage"] as? Double).map { $0 / 1000 }
                         ?? (d["mileage"] as? Int).map { Double($0) / 1000 }
@@ -165,6 +170,19 @@ final class AppState: ObservableObject {
                     if let v = try? await ble.read([f]) { for (k, vv) in v { live[k] = vv } }
                 }
             }
+        }
+    }
+
+    /// Change the proximity-unlock range. Cloud-side, but the server rejects it
+    /// with 1322 unless the scooter is reachable.
+    func setUnlockRange(_ dbm: Int) async -> String {
+        guard let token = await validToken(), let sn = scooter?.snId else { return "Not signed in" }
+        do {
+            try await NIUCloud.shared.setVehicleSetting(token: token, sn: sn, type: "smart_key_range", value: dbm)
+            smartKey = try? await NIUCloud.shared.smartKey(token: token, sn: sn)
+            return "Unlock range set"
+        } catch {
+            return error.localizedDescription
         }
     }
 

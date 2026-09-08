@@ -23,13 +23,13 @@ struct RootView: View {
         } else {
             TabView {
                 NavigationStack { DashboardView() }
-                    .tabItem { Label { Text("Scooter") } icon: { Icon("electric_scooter", size: 20) } }
+                    .tabItem { Label { Text("Scooter") } icon: { IconImage.of("electric_scooter") } }
                 NavigationStack { RidesView() }
-                    .tabItem { Label { Text("Rides") } icon: { Icon("timeline", size: 20) } }
+                    .tabItem { Label { Text("Rides") } icon: { IconImage.of("timeline") } }
                 NavigationStack { SettingsView() }
-                    .tabItem { Label { Text("Settings") } icon: { Icon("tune", size: 20) } }
+                    .tabItem { Label { Text("Settings") } icon: { IconImage.of("tune") } }
                 NavigationStack { AccountView() }
-                    .tabItem { Label { Text("Account") } icon: { Icon("account_circle", size: 20) } }
+                    .tabItem { Label { Text("Account") } icon: { IconImage.of("account_circle") } }
             }
         }
     }

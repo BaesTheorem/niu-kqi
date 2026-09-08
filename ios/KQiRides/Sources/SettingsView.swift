@@ -6,7 +6,7 @@ struct SettingsView: View {
     @State private var note: String?
     @State private var customMax: Double = 20
     @State private var assistMax: Double = 6
-    @State private var smartStart: Double = 3
+    @State private var kickStart: Double = 3
 
     private var status1: Int { app.live["foc_k_function_status1"]?.intValue ?? 0 }
     private var dbStatus: Int { app.live["db_k_function_status"]?.intValue ?? 0 }
@@ -18,6 +18,7 @@ struct SettingsView: View {
         ScrollView {
             VStack(spacing: 12) {
                 display
+                smartStartSection
                 if app.ble.state != .ready {
                     Panel {
                         HStack(spacing: 10) {
@@ -56,7 +57,7 @@ struct SettingsView: View {
     private func syncSliders() {
         if let v = app.live["foc_k_def_max_speed"]?.intValue { customMax = u.speed(Double(v) / 10) }
         if let v = app.live["foc_k_assist_max_speed"]?.intValue { assistMax = u.speed(Double(v) / 10) }
-        if let v = app.live["foc_k_no_zero_start"]?.intValue { smartStart = u.speed(Double(v) / 10) }
+        if let v = app.live["foc_k_no_zero_start"]?.intValue { kickStart = u.speed(Double(v) / 10) }
     }
 
     // MARK: - display (works with no scooter connected)
@@ -103,14 +104,14 @@ struct SettingsView: View {
                         await send(on ? "cruise on" : "cruise off")
                     }
                     Divider().overlay(T.outline)
-                    toggleRow("Smart Start (kick to go)", "directions_walk", status1 & 2 != 0) { on in
+                    toggleRow("Kick to start", "directions_walk", status1 & 2 != 0) { on in
                         await send(on ? "kickstart on" : "kickstart off")
                     }
                     Divider().overlay(T.outline)
                     sliderRow(title: "Kick speed before the motor engages",
-                              value: $smartStart, range: 1...10, unit: u.speedUnit) {
-                        try await app.ble.write([("foc_k_no_zero_start", Int((u.toKmh(smartStart) * 10).rounded()))])
-                        return "Smart Start threshold set"
+                              value: $kickStart, range: 1...10, unit: u.speedUnit) {
+                        try await app.ble.write([("foc_k_no_zero_start", Int((u.toKmh(kickStart) * 10).rounded()))])
+                        return "Kick-to-start threshold set"
                     }
                     Divider().overlay(T.outline)
                     throttleRow
@@ -157,6 +158,54 @@ struct SettingsView: View {
                 .font(.system(size: 11)).foregroundStyle(T.onSurfaceVariant)
         }
         .padding(16)
+    }
+
+    // MARK: - Smart Start (proximity unlock)
+
+    private var smartStartSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionLabel(text: "Smart Start")
+            Panel {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Unlocks the scooter when your phone is near it.")
+                        .font(.system(size: 12)).foregroundStyle(T.onSurfaceVariant)
+                    if let cfg = app.smartKey {
+                        Divider().overlay(T.outline)
+                        Text("Unlock distance").font(.system(size: 14)).foregroundStyle(T.onSurface)
+                        HStack(spacing: 6) {
+                            ForEach(Array(cfg.ranges.enumerated()), id: \.element) { idx, dbm in
+                                Button { act { await app.setUnlockRange(dbm) } } label: {
+                                    VStack(spacing: 1) {
+                                        Text(rangeLabel(idx, of: cfg.ranges.count))
+                                            .font(.system(size: 13, weight: .semibold))
+                                        Text("\(dbm) dBm").font(.system(size: 10))
+                                    }
+                                    .frame(maxWidth: .infinity).padding(.vertical, 9)
+                                    .foregroundStyle(cfg.smartKeyRange == dbm ? T.onPrimary : T.onSurface)
+                                    .background(cfg.smartKeyRange == dbm ? T.primary : Color.clear)
+                                    .overlay(Rectangle().strokeBorder(
+                                        cfg.smartKeyRange == dbm ? T.primary : T.outlineStrong, lineWidth: T.hairline))
+                                }
+                                .buttonStyle(.plain).disabled(busy)
+                            }
+                        }
+                        Text("Signal strength, not metres: a more negative number reaches further.")
+                            .font(.system(size: 11)).foregroundStyle(T.onSurfaceVariant)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text("Not loaded. Pull to refresh on the Rides tab, or sign in again.")
+                            .font(.system(size: 12)).foregroundStyle(T.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+    }
+
+    private func rangeLabel(_ i: Int, of n: Int) -> String {
+        if n <= 1 { return "Set" }
+        if i == 0 { return "Near" }
+        if i == n - 1 { return "Far" }
+        return "Medium"
     }
 
     // MARK: - speed limits
@@ -361,6 +410,11 @@ struct SettingsView: View {
         catch { note = error.localizedDescription }
         await app.refreshStatus()
         busy = false
+    }
+
+    private func act(_ body: @escaping () async -> String) {
+        busy = true
+        Task { note = await body(); busy = false }
     }
 
     private func act(_ body: @escaping () async throws -> String) {

@@ -40,16 +40,41 @@ extension UIColor {
     }
 }
 
-/// A Material Symbols (Sharp cut) glyph. Ligature-based, so the icon name is
-/// the literal text. Never an emoji, per the house icon rule.
+/// A Material Symbols (Sharp cut) glyph. Never an emoji, per the house icon rule.
+///
+/// This font has no ligature table, so rendering the icon's *name* draws the
+/// word itself. Names are mapped to codepoints at build time by
+/// scripts/make-icon-map.py; an unmapped name falls back to a bullet so a gap is
+/// visible as a gap rather than as stray text in the middle of the UI.
 struct Icon: View {
     let name: String
     var size: CGFloat = 22
     init(_ name: String, size: CGFloat = 22) { self.name = name; self.size = size }
     var body: some View {
-        Text(name)
+        Text(IconGlyph.map[name] ?? "\u{2022}")
             .font(.custom("MaterialSymbolsSharp-Regular", size: size))
             .accessibilityHidden(true)
+    }
+}
+
+/// A tab bar takes an Image, not an arbitrary view, so the glyph is rendered to
+/// a template bitmap and tinted by the system like any other tab icon.
+enum IconImage {
+    private static var cache: [String: Image] = [:]
+
+    static func of(_ name: String, size: CGFloat = 24) -> Image {
+        let key = "\(name)@\(size)"
+        if let hit = cache[key] { return hit }
+        let glyph = IconGlyph.map[name] ?? "\u{2022}"
+        let font = UIFont(name: "MaterialSymbolsSharp-Regular", size: size) ?? .systemFont(ofSize: size)
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: UIColor.label]
+        let str = NSAttributedString(string: glyph, attributes: attrs)
+        let box = str.size()
+        let img = UIGraphicsImageRenderer(size: box).image { _ in str.draw(at: .zero) }
+            .withRenderingMode(.alwaysTemplate)
+        let out = Image(uiImage: img)
+        cache[key] = out
+        return out
     }
 }
 
