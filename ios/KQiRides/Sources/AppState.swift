@@ -191,6 +191,19 @@ final class AppState: ObservableObject {
         return range.contains(n)
     }
 
+    /// The two status words every toggle reads. Refreshed on their own after a
+    /// command so the UI is not held hostage by a full sweep of every group.
+    static let statusWords = ["foc_k_function_status1", "db_k_function_status"]
+
+    /// Re-read just the bit fields. Cheap enough to run after each toggle.
+    func refreshStatusWords() async {
+        guard ble.state == .ready else { return }
+        for f in Self.statusWords {
+            guard let one = try? await ble.read([f]) else { continue }
+            for (k, v) in one where Self.isPlausible(k, v) { live[k] = v }
+        }
+    }
+
     func refreshStatus() async {
         guard ble.state == .ready else { return }
         for group in Self.statusGroups {
@@ -229,5 +242,17 @@ final class AppState: ObservableObject {
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         await refreshStatus()
+    }
+
+    /// Connect on open without stacking attempts. The scooter only advertises
+    /// when it is awake and nothing else holds the link, so a failure here is
+    /// normal and should stay quiet rather than throwing an error at the user.
+    private var connecting = false
+
+    func autoConnect() async {
+        guard !connecting, ble.state != .ready, !ble.state.isBusy, ble.creds != nil else { return }
+        connecting = true
+        defer { connecting = false }
+        await connectAndRead()
     }
 }

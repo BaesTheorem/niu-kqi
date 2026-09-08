@@ -8,9 +8,15 @@ struct SettingsView: View {
     @State private var assistMax: Double = 6
     @State private var kickStart: Double = 3
 
-    private var status1: Int { app.live["foc_k_function_status1"]?.intValue ?? 0 }
-    private var dbStatus: Int { app.live["db_k_function_status"]?.intValue ?? 0 }
-    private var ebsLevel: Int { (status1 & 256 != 0 ? 1 : 0) + (status1 & 512 != 0 ? 2 : 0) }
+    // Optional on purpose. Defaulting a status word to 0 makes every toggle
+    // render a confident answer out of data we never received: cruise reads off,
+    // alarm reads on. Unknown has to look different from off.
+    private var status1: Int? { app.live["foc_k_function_status1"]?.intValue }
+    private var dbStatus: Int? { app.live["db_k_function_status"]?.intValue }
+    private func bit(_ word: Int?, _ mask: Int) -> Bool? { word.map { $0 & mask != 0 } }
+    private var ebsLevel: Int? {
+        status1.map { ($0 & 256 != 0 ? 1 : 0) + ($0 & 512 != 0 ? 2 : 0) }
+    }
     private var throttleMode: Int { app.live["foc_k_throttle_mode_set"]?.intValue ?? 0 }
     private var u: Units { app.units }
 
@@ -112,11 +118,11 @@ struct SettingsView: View {
             SectionLabel(text: "Riding")
             Panel(padding: 0) {
                 VStack(spacing: 0) {
-                    toggleRow("Cruise control", "cruise_control", status1 & 4 != 0) { on in
+                    toggleRow("Cruise control", "cruise_control", bit(status1, 4)) { on in
                         await send(on ? "cruise on" : "cruise off")
                     }
                     Divider().overlay(T.outline)
-                    toggleRow("Kick to start", "directions_walk", status1 & 2 != 0) { on in
+                    toggleRow("Kick to start", "directions_walk", bit(status1, 2)) { on in
                         await send(on ? "kickstart on" : "kickstart off")
                     }
                     Divider().overlay(T.outline)
@@ -128,12 +134,12 @@ struct SettingsView: View {
                     Divider().overlay(T.outline)
                     throttleRow
                     Divider().overlay(T.outline)
-                    toggleRow("Dashboard shows unit 1", "speed", status1 & 1 != 0) { on in
+                    toggleRow("Dashboard shows unit 1", "speed", bit(status1, 1)) { on in
                         await send(on ? "unit 1" : "unit 0")
                     }
                     Divider().overlay(T.outline)
                     toggleRow("Auto power-off when idle", "timer_off",
-                              (app.live["foc_k_automatic_shutdown_en"]?.intValue ?? 0) != 0) { on in
+                              app.live["foc_k_automatic_shutdown_en"]?.intValue.map { $0 != 0 }) { on in
                         await act { try await app.ble.write([("foc_k_automatic_shutdown_en", on ? 1 : 0)])
                                     return on ? "Auto power-off on" : "Auto power-off off" }
                     }
@@ -342,11 +348,11 @@ struct SettingsView: View {
             SectionLabel(text: "Security")
             Panel(padding: 0) {
                 VStack(spacing: 0) {
-                    toggleRow("Fast lock", "bolt", status1 & 65536 != 0) { on in
+                    toggleRow("Fast lock", "bolt", bit(status1, 65536)) { on in
                         await send(on ? "fastlock on" : "fastlock off")
                     }
                     Divider().overlay(T.outline)
-                    toggleRow("Alarm sound", "notifications_active", dbStatus & 2 == 0) { on in
+                    toggleRow("Alarm sound", "notifications_active", dbStatus.map { $0 & 2 == 0 }) { on in
                         await send(on ? "alarm on" : "alarm off")
                     }
                 }
@@ -404,37 +410,47 @@ struct SettingsView: View {
         .padding(16)
     }
 
-    private func toggleRow(_ title: String, _ icon: String, _ isOn: Bool,
+    private func toggleRow(_ title: String, _ icon: String, _ isOn: Bool?,
                            _ action: @escaping (Bool) async -> Void) -> some View {
         HStack {
             Icon(icon, size: 18).foregroundStyle(T.onSurfaceVariant)
             Text(title).font(.system(size: 14)).foregroundStyle(T.onSurface)
             Spacer()
-            Toggle("", isOn: Binding(get: { isOn }, set: { v in Task { await action(v) } }))
-                .labelsHidden().tint(T.primary).disabled(busy)
+            if let isOn {
+                Toggle("", isOn: Binding(get: { isOn }, set: { v in Task { await action(v) } }))
+                    .labelsHidden().tint(T.primary).disabled(busy)
+            } else {
+                // Not read yet. Showing a switch here would be inventing a state.
+                Text("--").font(.system(size: 14, weight: .medium)).foregroundStyle(T.outlineStrong)
+            }
         }
         .padding(.horizontal, 16).padding(.vertical, 11)
     }
 
     private func send(_ cmd: String) async {
         busy = true
+        defer { busy = false }
         do { try await app.ble.run(cmd); note = "Sent \(cmd)" }
         catch { note = error.localizedDescription }
-        await app.refreshStatus()
-        busy = false
+        // Only the bit fields, not every group. A full sweep is 15 reads with an
+        // 8s timeout each plus retries, and every control stays disabled for it.
+        await app.refreshStatusWords()
     }
 
     private func act(_ body: @escaping () async -> String) {
         busy = true
-        Task { note = await body(); busy = false }
+        Task {
+            defer { busy = false }
+            note = await body()
+        }
     }
 
     private func act(_ body: @escaping () async throws -> String) {
         busy = true
         Task {
+            defer { busy = false }
             do { note = try await body() } catch { note = error.localizedDescription }
-            await app.refreshStatus()
-            busy = false
+            await app.refreshStatusWords()
         }
     }
 }

@@ -9,7 +9,7 @@ struct DashboardView: View {
     private var speed: Double? { app.live["foc_k_rt_speed"]?.intValue.map { Double($0) / 10 } }
     private var maxSpeed: Double? { app.live["foc_k_max_speed"]?.intValue.map { Double($0) / 10 } }
     private var range: Double? { app.live["db_k_estimated_mileage"]?.intValue.map { Double($0) / 100 } }
-    private var poweredOn: Bool { (app.live["db_k_realtime_status"]?.intValue ?? 0) & 1 != 0 }
+    private var poweredOn: Bool? { app.live["db_k_realtime_status"]?.intValue.map { $0 & 1 != 0 } }
 
     var body: some View {
         ScrollView {
@@ -74,7 +74,7 @@ struct DashboardView: View {
                                 .foregroundStyle(T.onSurface)
                             Text("%").font(.system(size: 16, weight: .medium)).foregroundStyle(T.onSurfaceVariant)
                         }
-                        Text(poweredOn ? "Powered on" : "Standby")
+                        Text(poweredOn.map { $0 ? "Powered on" : "Standby" } ?? "State unknown")
                             .font(.system(size: 12)).foregroundStyle(T.onSurfaceVariant)
                         if let f = app.live["db_k_f_code"]?.intValue, f != 0 {
                             HStack(spacing: 4) {

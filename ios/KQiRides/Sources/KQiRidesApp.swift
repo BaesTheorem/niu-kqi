@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct KQiRidesApp: App {
     @StateObject private var app = AppState()
+    @Environment(\.scenePhase) private var phase
 
     var body: some Scene {
         WindowGroup {
@@ -10,6 +11,11 @@ struct KQiRidesApp: App {
                 .environmentObject(app)
                 .tint(T.primary)
                 .onAppear { app.restore() }
+                .onChange(of: phase) { _, new in
+                    // Coming back from the background is the same situation as a
+                    // cold open: the link is gone and the scooter may be in range.
+                    if new == .active { Task { await app.autoConnect() } }
+                }
         }
     }
 }
@@ -31,6 +37,7 @@ struct RootView: View {
                 NavigationStack { AccountView() }
                     .tabItem { Label { Text("Account") } icon: { IconImage.of("account_circle") } }
             }
+            .task { await app.autoConnect() }
         }
     }
 }
