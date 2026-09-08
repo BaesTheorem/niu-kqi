@@ -359,6 +359,22 @@ def fmt_bits(name: str, value) -> str:
     return "; ".join(on)
 
 
+def fmt_clock(v: int) -> str:
+    """Render a scooter clock value both ways, with its skew from now.
+
+    The scooter stores a bare u32 with no timezone attached, so the same number is a
+    different wall time depending on whether whoever wrote it meant UTC or local.
+    Printing one reading in the same convention we write with would agree with itself
+    no matter how wrong the scooter is, so print both and the skew, which needs no
+    convention at all.
+    """
+    skew = v - int(time.time())
+    a = abs(skew)
+    return (f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(v))} local"
+            f" / {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(v))} UTC"
+            f"  (skew {'+' if skew >= 0 else '-'}{a // 3600}h{a % 3600 // 60:02d}m)")
+
+
 def print_fields(values: dict, as_json: bool = False) -> None:
     if as_json:
         print(json.dumps(values, indent=1, sort_keys=True))
@@ -371,7 +387,7 @@ def print_fields(values: dict, as_json: bool = False) -> None:
         if k in ("foc_k_max_speed", "foc_k_def_max_speed", "foc_k_assist_max_speed", "foc_k_assist_def_max_speed", "foc_k_no_zero_start") and isinstance(v, int):
             extra = f"{v / 10:.1f} km/h"
         if k == "db_k_timestamp" and isinstance(v, int) and v > 0:
-            extra = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(v))
+            extra = fmt_clock(v)
         if k == "db_k_estimated_mileage" and isinstance(v, int):
             extra = f"{v / 100:.2f} km (if /100)"
         if isinstance(v, int) and k not in ("bms_soc_rt",) and v >= 256 and not extra:
