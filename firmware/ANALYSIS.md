@@ -71,48 +71,54 @@ sha256  7ed86b1e2b545a9b7efc57eff3f9f56742b97f503202dff8702af25744051a46
   16-bit code, then zero padding and a small trailing value.
 - No printable strings, which is normal for a bare light-controller image.
 
-## Architecture: M-CORE family (16-bit, big-endian)
+## Architecture: unconfirmed. M-CORE family is the leading candidate
 
-This was the hard part, because it is not ARM. Method and evidence:
+The image is definitely plain code, not encrypted, but the exact ISA is **not
+established**. An earlier version of this file claimed M-CORE was confirmed; a
+control run disproved the evidence for that, so here is the honest state.
 
-1. **Ruled out the usual suspects with capstone.** A linear sweep under ARM,
+**What is solid:**
+
+1. **It is not any common architecture.** A capstone linear sweep under ARM,
    Thumb, ARM64, MIPS, PPC, SPARC, RISC-V, SuperH, XCore, SystemZ and
-   TMS320C64x all collapsed under ~1.1% coverage. A 35 KB ARM image would have
-   hundreds of `push {lr}` / `bx lr`; this has 7 and 1. So it is not any common
-   fixed-width RISC.
+   TMS320C64x all collapse under ~1.1% coverage. A 35 KB ARM image would carry
+   hundreds of `push {lr}` / `bx lr`; this has 7 and 1.
 
-2. **Tried the exotic cores in radare2** (arc, mcore, nds32, xtensa, nios2,
-   tricore). Invalid-instruction rate cleared nds32/nios2/tricore (as noisy on
-   the image as on random bytes) but could not separate the dense decoders
-   (mcore, arc, xtensa all swallow arbitrary bytes).
+2. **It is not encrypted or compressed.** Entropy is 6.38 bits/byte, and the
+   image contains large runs of zero padding (1939 words decode as `bkpt`,
+   i.e. `0x0000`). Encrypted or packed data sits at ~7.99. For contrast, the
+   KQi3 `FOC` images circulated by the ScooterHacking community measure 7.990,
+   so NIU *does* encrypt at least some controller images. This LCU image is
+   not one of them.
 
-3. **Branch-target test settled it.** Disassembled at base `0xC0000000` and
-   checked what fraction of branch/call targets land inside the image:
+**What does NOT hold up.** The branch-target test previously cited here is
+worthless on its own. mcore is a dense 16-bit ISA whose branches are short and
+PC-relative, so targets land near the PC no matter what the bytes are:
 
-   | arch    | in-range branch targets |
-   |---------|-------------------------|
-   | mcore   | **99.8%** (1951/1954)   |
-   | arc     | 48-62%                  |
-   | xtensa  | 63%                     |
+| sample                          | entropy | in-range branch targets |
+|---------------------------------|---------|-------------------------|
+| this LCU image                  | 6.38    | 99.8%                   |
+| KQi3 FOC image (encrypted)      | 7.99    | 96.6%                   |
+| **pure random bytes (control)** | 8.00    | **96.3%**               |
 
-   Real code branches to itself; a wrong decoding scatters. 99.8% is decisive.
+Random noise scores 96.3%, so 99.8% is a few points above chance, not proof.
+The same caveat applies to the instruction census: under a dense decoder,
+arbitrary bytes also yield a plausible-looking mix of `movi`/`ld.w`/`st.b`. The
+one census difference that does survive is this image's much higher call
+density (`bsr`) and its zero padding, both of which say "real code" without
+saying *which* ISA.
 
-4. **Instruction census confirms real code.** Under mcore big-endian the whole
-   image reads as a sane compiler mix: 1087 `movi`, 923 `bsr` (calls), 825
-   `addi`, 730 `ld.w`, 394 `bf`, 345 `st.w`, 286 `jmpi`, 175 `br`, 168 `subi`,
-   121 `bt`, 65 `rte`, 55 `jsri`, 37 `jsr`.
+**Where that leaves it.** A 16-bit big-endian core in the M-CORE/C-SKY family
+remains the best guess: the encoding width fits, the `0xC0000000` code base
+fits, and C-SKY is ubiquitous in Chinese MCUs. But mcore, arc and xtensa are
+all dense decoders that swallow arbitrary bytes, and nothing here separates
+them convincingly. Treat `KAB2FV20.asm` as a working hypothesis, not a
+faithful listing.
 
-M-CORE is Motorola/Freescale's 16-bit big-endian RISC; **C-SKY**, ubiquitous in
-Chinese MCUs, is its direct descendant and near-identical at this level. The
-`0xC0000000` code base and 16-bit encoding both fit. radare2's `mcore` decoder
-is the closest freely available one but not exact: a few pc-relative loads
-render impossible operands, which is the tell that the exact core is a C-SKY
-variant rather than classic M-CORE.
-
-**To refine:** disassemble with a C-SKY binutils (`csky-abiv2-elf-objdump -b
-binary -m csky -EB -D`) or an M-CORE-aware toolchain for a faithful listing. A
-true decompiler (Ghidra) would need an M-CORE/C-SKY processor module, which is
-not stock.
+**To actually settle it:** disassemble with a real C-SKY binutils
+(`csky-abiv2-elf-objdump -b binary -m csky -EB -D`) and check whether function
+prologues/epilogues pair up and whether call targets land on function starts.
+That structural coherence, not raw branch range, is the test that discriminates.
 
 ## Reproduce
 

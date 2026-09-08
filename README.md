@@ -124,8 +124,8 @@ NIU's `v5/ota/checkupdate` is a version diff, so it only returns a download URL
 when you claim a real release older than the newest published one. `pull` reads
 the installed versions, walks each down until the server offers an image, and
 verifies its md5. On a current KQi Air only the light unit has a published image
-(the rest are at factory versions with no OTA update). The images are a 16-bit
-big-endian M-CORE-family core; see `firmware/ANALYSIS.md`.
+(the rest are at factory versions with no OTA update). The image is plain (unencrypted) code for an as-yet unconfirmed 16-bit core;
+see `firmware/ANALYSIS.md`.
 
 ## Known unknowns
 
