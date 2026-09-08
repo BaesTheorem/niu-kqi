@@ -1,0 +1,41 @@
+name: KQiRides
+options:
+  bundleIdPrefix: com.alexhedtke
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+configFiles:
+  Debug: Config/Signing.xcconfig
+  Release: Config/Signing.xcconfig
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+targets:
+  KQiRides:
+    type: application
+    platform: iOS
+    sources:
+      - path: KQiRides/Sources
+      - path: KQiRides/Resources
+    info:
+      path: KQiRides/Info.plist
+      properties:
+        CFBundleDisplayName: KQi Rides
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        ITSAppUsesNonExemptEncryption: false
+        UIAppFonts:
+          - MaterialSymbolsSharp.ttf
+        # CoreBluetooth crashes on first use without this key, rather than
+        # failing gracefully, so it is not optional.
+        NSBluetoothAlwaysUsageDescription: KQi Rides talks to your scooter over Bluetooth to read status and change settings.
+        NSBluetoothPeripheralUsageDescription: KQi Rides talks to your scooter over Bluetooth to read status and change settings.

@@ -1,0 +1,4 @@
+// Copy to Signing.xcconfig and fill in. That file is gitignored: a team id is
+// account-identifying, and it differs per machine anyway.
+DEVELOPMENT_TEAM = YOURTEAMID
+CODE_SIGN_STYLE = Automatic

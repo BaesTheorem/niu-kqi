@@ -1,0 +1,167 @@
+import Foundation
+import SwiftUI
+
+/// Tiny Keychain wrapper: the NIU session token is a bearer credential for the
+/// account, so it does not belong in UserDefaults.
+enum Keychain {
+    private static let account = "niu.session"
+
+    static func save(_ data: Data) {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                kSecAttrAccount as String: account]
+        SecItemDelete(q as CFDictionary)
+        var add = q
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        SecItemAdd(add as CFDictionary, nil)
+    }
+
+    static func load() -> Data? {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                kSecAttrAccount as String: account,
+                                kSecReturnData as String: true,
+                                kSecMatchLimit as String: kSecMatchLimitOne]
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess else { return nil }
+        return out as? Data
+    }
+
+    static func clear() {
+        SecItemDelete([kSecClass as String: kSecClassGenericPassword,
+                       kSecAttrAccount as String: account] as CFDictionary)
+    }
+}
+
+@MainActor
+final class AppState: ObservableObject {
+    @Published var session: NIUCloud.Session?
+    @Published var scooter: Scooter?
+    @Published var rides: [Ride] = []
+    @Published var odometerKm: Double?
+    @Published var loading = false
+    @Published var error: String?
+
+    /// Live values read over BLE, keyed by field name.
+    @Published var live: [String: NIUProto.Value] = [:]
+
+    let ble = ScooterBLE()
+
+    var isLoggedIn: Bool { session != nil }
+
+    /// Rides NIU filed under the wrong calendar day.
+    var misdatedCount: Int { rides.filter(\.isMisdated).count }
+
+    var days: [RideDay] { rides.groupedByCorrectedDay() }
+
+    var thisWeekKm: Double {
+        let cal = Calendar.current
+        guard let weekStart = cal.dateInterval(of: .weekOfYear, for: Date())?.start else { return 0 }
+        return rides.filter { $0.start >= weekStart }.reduce(0) { $0 + $1.km }
+    }
+
+    var totalTrackedKm: Double { rides.reduce(0) { $0 + $1.km } }
+
+    // MARK: - session
+
+    func restore() {
+        NIUFields.load()
+        if let d = Keychain.load(), let s = try? JSONDecoder().decode(NIUCloud.Session.self, from: d) {
+            session = s
+            Task { await bootstrap() }
+        }
+    }
+
+    func logIn(account: String, password: String) async {
+        loading = true; error = nil
+        do {
+            let s = try await NIUCloud.shared.login(account: account, password: password)
+            session = s
+            if let d = try? JSONEncoder().encode(s) { Keychain.save(d) }
+            await bootstrap()
+        } catch {
+            self.error = error.localizedDescription
+        }
+        loading = false
+    }
+
+    func logOut() {
+        Keychain.clear()
+        session = nil; scooter = nil; rides = []; live = [:]
+        ble.disconnect()
+    }
+
+    private func validToken() async -> String? {
+        guard var s = session else { return nil }
+        if s.expiresAt.timeIntervalSinceNow < 3600, !s.refreshToken.isEmpty {
+            if let r = try? await NIUCloud.shared.refresh(s) {
+                s = r; session = r
+                if let d = try? JSONEncoder().encode(r) { Keychain.save(d) }
+            }
+        }
+        return s.token
+    }
+
+    /// Pull the account's scooter, its BLE credentials, and the ride history.
+    func bootstrap() async {
+        guard let token = await validToken() else { return }
+        loading = true; error = nil
+        do {
+            let list = try await NIUCloud.shared.scooters(token: token)
+            scooter = list.first
+            if let sn = scooter?.snId {
+                ble.creds = try? await NIUCloud.shared.bleInfo(token: token, sn: sn)
+                rides = try await NIUCloud.shared.allRides(token: token, sn: sn)
+                if let d = try? await NIUCloud.shared.detail(token: token, sn: sn) {
+                    odometerKm = (d["mileage"] as? Double).map { $0 / 1000 }
+                        ?? (d["mileage"] as? Int).map { Double($0) / 1000 }
+                }
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+        loading = false
+    }
+
+    func refreshRides() async {
+        guard let token = await validToken(), let sn = scooter?.snId else { return }
+        loading = true
+        do { rides = try await NIUCloud.shared.allRides(token: token, sn: sn) }
+        catch { self.error = error.localizedDescription }
+        loading = false
+    }
+
+    // MARK: - BLE convenience
+
+    /// The status set the dashboard shows, read in small groups so one bad
+    /// field cannot blank the whole screen.
+    static let statusGroups: [[String]] = [
+        ["bms_soc_rt", "foc_k_rt_speed", "foc_k_gears"],
+        ["foc_k_max_speed", "foc_k_def_max_speed"],
+        ["db_k_estimated_mileage", "db_k_timestamp"],
+        ["foc_k_function_status1", "db_k_function_status"],
+        ["db_k_sn", "db_k_sw_ver", "db_k_hw_ver"],
+        ["foc_k_sn", "foc_k_s_ver", "foc_k_h_ver"],
+    ]
+
+    func refreshStatus() async {
+        guard ble.state == .ready else { return }
+        for group in Self.statusGroups {
+            if let vals = try? await ble.read(group) {
+                for (k, v) in vals { live[k] = v }
+            } else {
+                for f in group {
+                    if let v = try? await ble.read([f]) { for (k, vv) in v { live[k] = vv } }
+                }
+            }
+        }
+    }
+
+    func connectAndRead() async {
+        await ble.connect()
+        for _ in 0..<40 {
+            if ble.state == .ready { break }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        await refreshStatus()
+    }
+}

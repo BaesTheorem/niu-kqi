@@ -8,3 +8,11 @@ secrets/*
 firmware/*.bin
 firmware/*.asm
 firmware/manifest.json
+
+# iOS app: generated project, build output, per-machine signing, and resources
+# that are copies of something else (build.sh puts them back).
+ios/build/
+ios/KQiRides.xcodeproj/
+ios/Config/Signing.xcconfig
+ios/KQiRides/Resources/fields.json
+ios/KQiRides/Resources/MaterialSymbolsSharp.ttf
