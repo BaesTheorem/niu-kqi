@@ -76,17 +76,27 @@ struct DashboardView: View {
                         }
                         Text(poweredOn ? "Powered on" : "Standby")
                             .font(.system(size: 12)).foregroundStyle(T.onSurfaceVariant)
+                        if let f = app.live["db_k_f_code"]?.intValue, f != 0 {
+                            HStack(spacing: 4) {
+                                Icon("error", size: 13)
+                                Text("Fault \(f)").font(.system(size: 12, weight: .medium))
+                            }
+                            .foregroundStyle(T.error)
+                        }
                     }
                     Spacer()
                 }
                 Divider().overlay(T.outline)
                 HStack(spacing: 0) {
-                    Stat(value: range.map { String(format: "%.1f", $0) } ?? "--", unit: "km", caption: "Est. range")
+                    Stat(value: range.map { app.units.distanceText($0) } ?? "--",
+                         unit: app.units.distanceUnit, caption: "Est. range")
                     Rectangle().fill(T.outline).frame(width: T.hairline, height: 34)
-                    Stat(value: speed.map { String(format: "%.1f", $0) } ?? "--", unit: "km/h", caption: "Speed")
+                    Stat(value: speed.map { app.units.speedText($0) } ?? "--",
+                         unit: app.units.speedUnit, caption: "Speed")
                         .padding(.leading, 14)
                     Rectangle().fill(T.outline).frame(width: T.hairline, height: 34)
-                    Stat(value: maxSpeed.map { String(format: "%.0f", $0) } ?? "--", unit: "km/h", caption: "Max")
+                    Stat(value: maxSpeed.map { app.units.speedText($0, decimals: 0) } ?? "--",
+                         unit: app.units.speedUnit, caption: "Max")
                         .padding(.leading, 14)
                 }
             }

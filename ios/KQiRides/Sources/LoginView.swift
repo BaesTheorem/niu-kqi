@@ -12,8 +12,8 @@ struct LoginView: View {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 6) {
                     Icon("electric_scooter", size: 44).foregroundStyle(T.primary)
-                    Text("KQi Rides").font(.system(size: 30, weight: .bold)).foregroundStyle(T.onSurface)
-                    Text("Your NIU ride history, dated by when you actually rode.")
+                    Text("KQi Air").font(.system(size: 30, weight: .bold)).foregroundStyle(T.onSurface)
+                    Text("Ride data and full control for your KQi Air.")
                         .font(.system(size: 14)).foregroundStyle(T.onSurfaceVariant)
                         .fixedSize(horizontal: false, vertical: true)
                 }

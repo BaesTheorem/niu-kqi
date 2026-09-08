@@ -20,6 +20,9 @@ if [[ ! -f $FONT ]]; then
   fi
 fi
 
+ICON=KQiRides/Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png
+[[ -f $ICON ]] || ./scripts/make-icon.sh
+
 xcodegen generate
 
 if [[ "${1:-}" == "--device" ]]; then

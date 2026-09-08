@@ -44,6 +44,12 @@ final class AppState: ObservableObject {
     /// Live values read over BLE, keyed by field name.
     @Published var live: [String: NIUProto.Value] = [:]
 
+    /// Display units, remembered between launches. Imperial by default: the
+    /// scooter is ridden in the US even though it reports metric on the wire.
+    @Published var units: Units = Units(rawValue: UserDefaults.standard.string(forKey: "units") ?? "") ?? .imperial {
+        didSet { UserDefaults.standard.set(units.rawValue, forKey: "units") }
+    }
+
     let ble = ScooterBLE()
 
     var isLoggedIn: Bool { session != nil }
@@ -139,6 +145,11 @@ final class AppState: ObservableObject {
         ["foc_k_max_speed", "foc_k_def_max_speed"],
         ["db_k_estimated_mileage", "db_k_timestamp"],
         ["foc_k_function_status1", "db_k_function_status"],
+        ["db_k_realtime_status", "db_k_f_code"],
+        // The rest of what the vendor app's kick-scooter screens drive.
+        ["foc_k_throttle_mode_set", "foc_k_no_zero_start", "foc_k_automatic_shutdown_en"],
+        ["foc_k_assist_max_speed", "foc_k_assist_def_max_speed"],
+        ["foc_k_decorative_light_mode"],
         ["db_k_sn", "db_k_sw_ver", "db_k_hw_ver"],
         ["foc_k_sn", "foc_k_s_ver", "foc_k_h_ver"],
     ]
