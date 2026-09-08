@@ -51,6 +51,13 @@ final class ScooterBLE: NSObject, ObservableObject {
     private var connectCont: CheckedContinuation<Void, Error>?
     private var scanTimer: Timer?
 
+    /// Standing intent to be connected, as opposed to one attempt. Everything
+    /// that can stop an attempt early (Bluetooth still waking, no credentials
+    /// yet, the scooter asleep) is temporary, so the intent outlives the attempt
+    /// and something retries it.
+    private var wantsConnection = false
+    private var retryTask: Task<Void, Never>?
+
     override init() {
         super.init()
         central = CBCentralManager(delegate: self, queue: .main)
@@ -64,11 +71,29 @@ final class ScooterBLE: NSObject, ObservableObject {
     // MARK: - connect
 
     func connect() async {
-        guard central.state == .poweredOn else {
-            state = central.state == .unauthorized ? .unauthorized : .poweredOff
+        wantsConnection = true
+        beginScan()
+    }
+
+    /// Start a scan if everything needed is in place. Called again whenever one
+    /// of the preconditions arrives: Bluetooth powering on, credentials landing,
+    /// or a retry coming round.
+    private func beginScan() {
+        guard wantsConnection, state != .ready, !state.isBusy else { return }
+        switch central.state {
+        case .poweredOn:
+            break
+        case .unauthorized:
+            state = .unauthorized; return
+        case .unknown, .resetting:
+            // No answer yet, just a radio that has not finished waking. Saying
+            // "Bluetooth off" here is what made a cold launch look like a refusal.
             return
+        default:
+            state = .poweredOff; return
         }
-        guard state != .ready else { return }
+        guard creds != nil else { return }   // bootstrap will call back in
+
         state = .scanning
         note("scanning for \(creds?.bleName ?? "NIU device")")
         central.scanForPeripherals(withServices: nil)
@@ -77,16 +102,43 @@ final class ScooterBLE: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self, self.state == .scanning else { return }
                 self.central.stopScan()
-                self.state = .failed("Scooter not found. Wake it (power button or a nudge) and make sure NIU's app isn't holding the link.")
+                // The scooter only advertises while awake, so not finding it is
+                // the normal case, not a failure worth latching.
+                self.note("not seen; will keep looking")
+                self.scheduleRetry()
             }
         }
     }
 
+    private func scheduleRetry(after seconds: Double = 15) {
+        retryTask?.cancel()
+        retryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard let self, !Task.isCancelled, self.wantsConnection, self.state != .ready else { return }
+            self.beginScan()
+        }
+    }
+
+    /// Preconditions can arrive after the first attempt; nudge the state machine.
+    func retryIfWanted() { if wantsConnection { beginScan() } }
+
+    /// Stop looking, but only when the user says so.
     func disconnect() {
+        wantsConnection = false
+        retryTask?.cancel(); retryTask = nil
         scanTimer?.invalidate()
+        central.stopScan()
         if let p = peripheral { central.cancelPeripheralConnection(p) }
         peripheral = nil; notifyChar = nil; writeChar = nil; key = ""
         state = .idle
+    }
+
+    /// Backgrounding should stop the radio work without forgetting the intent.
+    func pauseScanning() {
+        retryTask?.cancel(); retryTask = nil
+        scanTimer?.invalidate()
+        central.stopScan()
+        if state == .scanning { state = .idle }
     }
 
     // MARK: - frame plumbing
@@ -247,7 +299,9 @@ extension ScooterBLE: CBCentralManagerDelegate, CBPeripheralDelegate {
     nonisolated func centralManagerDidUpdateState(_ central: CBCentralManager) {
         Task { @MainActor in
             switch central.state {
-            case .poweredOn: if self.state == .poweredOff { self.state = .idle }
+            case .poweredOn:
+                if self.state == .poweredOff { self.state = .idle }
+                self.retryIfWanted()
             case .unauthorized: self.state = .unauthorized
             default: self.state = .poweredOff
             }
@@ -283,7 +337,10 @@ extension ScooterBLE: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     nonisolated func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-        Task { @MainActor in self.state = .failed(error?.localizedDescription ?? "connect failed") }
+        Task { @MainActor in
+            self.state = .failed(error?.localizedDescription ?? "connect failed")
+            self.scheduleRetry(after: 5)
+        }
     }
 
     nonisolated func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
@@ -291,6 +348,7 @@ extension ScooterBLE: CBCentralManagerDelegate, CBPeripheralDelegate {
             self.note("disconnected")
             self.peripheral = nil; self.notifyChar = nil; self.writeChar = nil; self.key = ""
             if self.state == .ready { self.state = .idle }
+            if self.wantsConnection { self.scheduleRetry(after: 5) }
         }
     }
 

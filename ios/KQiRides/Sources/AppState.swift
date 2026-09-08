@@ -144,6 +144,10 @@ final class AppState: ObservableObject {
             scooter = list.first
             if let sn = scooter?.snId {
                 ble.creds = try? await NIUCloud.shared.bleInfo(token: token, sn: sn)
+                // Credentials usually land after the first auto-connect attempt
+                // has already bailed, so poke the state machine now that the
+                // precondition it was missing exists.
+                ble.retryIfWanted()
                 rides = try await NIUCloud.shared.allRides(token: token, sn: sn)
                 smartKey = try? await NIUCloud.shared.smartKey(token: token, sn: sn)
                 // Odometer comes from the battery record, in metres. detail.mileage
@@ -281,9 +285,15 @@ final class AppState: ObservableObject {
     private var connecting = false
 
     func autoConnect() async {
-        guard !connecting, ble.state != .ready, !ble.state.isBusy, ble.creds != nil else { return }
+        guard !connecting, ble.state != .ready else { return }
         connecting = true
         defer { connecting = false }
+        // No creds check here on purpose. Connecting is a standing intent now:
+        // if credentials or the radio are not ready yet, the BLE layer holds the
+        // intent and picks it up when they arrive, instead of this bailing once
+        // and never running again.
         await connectAndRead()
     }
+
+    func pauseScanning() { ble.pauseScanning() }
 }

@@ -15,6 +15,8 @@ struct KQiRidesApp: App {
                     // Coming back from the background is the same situation as a
                     // cold open: the link is gone and the scooter may be in range.
                     if new == .active { Task { await app.autoConnect() } }
+                    // Keep the intent, stop the radio work.
+                    else { app.pauseScanning() }
                 }
         }
     }
