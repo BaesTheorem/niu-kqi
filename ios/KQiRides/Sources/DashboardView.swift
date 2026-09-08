@@ -5,10 +5,18 @@ struct DashboardView: View {
     @State private var busy: String?
     @State private var toast: String?
 
-    private var battery: Int? { app.live["bms_soc_rt"]?.intValue }
-    private var speed: Double? { app.live["foc_k_rt_speed"]?.intValue.map { Double($0) / 10 } }
-    private var maxSpeed: Double? { app.live["foc_k_max_speed"]?.intValue.map { Double($0) / 10 } }
-    private var range: Double? { app.live["db_k_estimated_mileage"]?.intValue.map { Double($0) / 100 } }
+    /// Battery from the scooter when connected, otherwise the cloud's last figure.
+    private var battery: Int? { app.live["bms_soc_rt"]?.intValue ?? app.cloudBatteryPercent }
+
+    /// Estimated range, in km. The cloud reports this directly in kilometres. The
+    /// BLE field db_k_estimated_mileage reads 0 on this scooter, so it is only a
+    /// fallback and only when it is actually non-zero.
+    private var range: Double? {
+        if let live = app.live["db_k_estimated_mileage"]?.intValue, live > 0 {
+            return Double(live) / 100
+        }
+        return app.estimatedRangeKm
+    }
     private var poweredOn: Bool? { app.live["db_k_realtime_status"]?.intValue.map { $0 & 1 != 0 } }
 
     var body: some View {
@@ -87,16 +95,14 @@ struct DashboardView: View {
                     Spacer()
                 }
                 Divider().overlay(T.outline)
+                // Speed and the speed cap used to sit here. Neither is worth a
+                // glance: this app is not read while riding, and the cap does not move.
                 HStack(spacing: 0) {
                     Stat(value: range.map { app.units.distanceText($0) } ?? "--",
-                         unit: app.units.distanceUnit, caption: "Est. range")
+                         unit: app.units.distanceUnit, caption: "Estimated range")
                     Rectangle().fill(T.outline).frame(width: T.hairline, height: 34)
-                    Stat(value: speed.map { app.units.speedText($0) } ?? "--",
-                         unit: app.units.speedUnit, caption: "Speed")
-                        .padding(.leading, 14)
-                    Rectangle().fill(T.outline).frame(width: T.hairline, height: 34)
-                    Stat(value: maxSpeed.map { app.units.speedText($0, decimals: 0) } ?? "--",
-                         unit: app.units.speedUnit, caption: "Max")
+                    Stat(value: app.units.distanceText(app.displayOdometerKm, decimals: 0),
+                         unit: app.units.distanceUnit, caption: "Total mileage")
                         .padding(.leading, 14)
                 }
             }

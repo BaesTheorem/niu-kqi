@@ -7,6 +7,7 @@ struct RidesView: View {
         ScrollView {
             VStack(spacing: 12) {
                 summary
+                MileageChart()
                 ForEach(app.days) { day in daySection(day) }
                 if app.rides.isEmpty && !app.loading {
                     Panel { Text("No rides yet.").foregroundStyle(T.onSurfaceVariant) }
@@ -41,7 +42,7 @@ struct RidesView: View {
                 }
                 Divider().overlay(T.outline)
                 HStack(spacing: 0) {
-                    Stat(value: app.units.distanceText(app.odometerKm ?? app.totalTrackedKm, decimals: 0),
+                    Stat(value: app.units.distanceText(app.displayOdometerKm, decimals: 0),
                          unit: app.units.distanceUnit, caption: "Total mileage")
                     Rectangle().fill(T.outline).frame(width: T.hairline, height: 34)
                     Stat(value: app.units.distanceText(app.thisWeekKm),

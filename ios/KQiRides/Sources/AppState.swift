@@ -38,6 +38,8 @@ final class AppState: ObservableObject {
     @Published var scooter: Scooter?
     @Published var rides: [Ride] = []
     @Published var odometerKm: Double?
+    @Published var estimatedRangeKm: Double?
+    @Published var cloudBatteryPercent: Int?
     @Published var loading = false
     @Published var error: String?
 
@@ -71,6 +73,13 @@ final class AppState: ObservableObject {
     }
 
     var totalTrackedKm: Double { actualRides.reduce(0) { $0 + $1.km } }
+
+    /// Prefer the vehicle odometer, but a zero from the cloud means it has no
+    /// figure for this scooter rather than that nothing has been ridden.
+    var displayOdometerKm: Double {
+        if let o = odometerKm, o > 0 { return o }
+        return totalTrackedKm
+    }
 
     // MARK: - session
 
@@ -123,9 +132,17 @@ final class AppState: ObservableObject {
                 ble.creds = try? await NIUCloud.shared.bleInfo(token: token, sn: sn)
                 rides = try await NIUCloud.shared.allRides(token: token, sn: sn)
                 smartKey = try? await NIUCloud.shared.smartKey(token: token, sn: sn)
+                // Odometer comes from the battery record, in metres. detail.mileage
+                // reports 44 on this scooter against a real 137 km, so it is a
+                // different measure and dividing it by 1000 produced the 0 on screen.
+                if let b = try? await NIUCloud.shared.batteryInfo(token: token, sn: sn) {
+                    odometerKm = b.totalMileageMeters.map { Double($0) / 1000 }
+                    cloudBatteryPercent = b.chargePercent
+                }
                 if let d = try? await NIUCloud.shared.detail(token: token, sn: sn) {
-                    odometerKm = (d["mileage"] as? Double).map { $0 / 1000 }
-                        ?? (d["mileage"] as? Int).map { Double($0) / 1000 }
+                    // Already kilometres. Do not scale it.
+                    estimatedRangeKm = (d["estimated_mileage"] as? Int).map(Double.init)
+                        ?? (d["estimated_mileage"] as? Double)
                 }
             }
         } catch {

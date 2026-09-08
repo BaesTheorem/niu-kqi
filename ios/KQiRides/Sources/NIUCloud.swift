@@ -137,6 +137,26 @@ actor NIUCloud {
         return (data as? [String: Any]) ?? [:]
     }
 
+    /// Odometer and pack state.
+    ///
+    /// `scooter/detail` also carries a `mileage`, but on this scooter it reports
+    /// 44 while the real odometer is 137 km, so it is not the same measure and is
+    /// not used. `battery_total_mileage` here is in metres and matches what the
+    /// vendor app shows as Total Mileage.
+    struct BatteryInfo {
+        let totalMileageMeters: Int?
+        let chargePercent: Int?
+    }
+
+    func batteryInfo(token: String, sn: String) async throws -> BatteryInfo {
+        var c = URLComponents(string: apiHost + "v5/service/battery/get_battery_info")!
+        c.queryItems = [URLQueryItem(name: "sn", value: sn)]
+        let data = try await request("GET", c.url!, token: token)
+        let a = ((data as? [String: Any])?["batteryA"] as? [String: Any]) ?? [:]
+        return BatteryInfo(totalMileageMeters: a["battery_total_mileage"] as? Int,
+                           chargePercent: a["battery_charging"] as? Int)
+    }
+
     // MARK: - rides
 
     /// One page of rides. `index` is a 1-based page number the server insists on

@@ -29,6 +29,12 @@ enum T {
     static let warnContainer  = dyn(0xFFDF9A, 0x5C4200)
     static let onWarnContainer = dyn(0x261A00, 0xFFDF9A)
 
+    /// Chart mark colour. Deliberately not the UI primary: run through the
+    /// palette validator, #006C4C reads as gray at chart size (chroma below the
+    /// floor) and #63DBAC is too light for the dark band. These two are the
+    /// nearest steps that pass every check against their own surface.
+    static let chart = dyn(0x0E9F6E, 0x25A87A)
+
     static let hairline: CGFloat = 1
 }
 
