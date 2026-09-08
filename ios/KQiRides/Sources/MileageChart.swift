@@ -83,6 +83,28 @@ struct MileageChart: View {
     private var best: Bucket? { buckets.max { $0.km < $1.km } }
     private var selectedBucket: Bucket? { buckets.first { $0.id == selected } }
 
+    /// The period in progress: today, this week, this month, this year. This is
+    /// the number the selector is expected to change. The window total is not:
+    /// with only days of history every window covers all of it, so summing the
+    /// window shows the same figure in all four views and reads as broken.
+    private var current: Bucket? { buckets.last }
+
+    private var currentLabel: String {
+        switch period {
+        case .day: return "Today"
+        case .week: return "This week"
+        case .month: return "This month"
+        case .year: return "This year"
+        }
+    }
+
+    private var windowLabel: String {
+        guard let first = buckets.first?.start else { return "" }
+        let f = DateFormatter()
+        f.dateFormat = period == .year ? "yyyy" : "MMM d"
+        return "since \(f.string(from: first))"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             picker
@@ -122,17 +144,24 @@ struct MileageChart: View {
     /// as the readout for the selected bar.
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(selectedBucket.map { "\(period.label) of \($0.id)" } ?? "Last \(period.count) \(period.rawValue)s")
+            Text(selectedBucket.map { "\(period.label) of \($0.id)" } ?? currentLabel)
                 .font(.system(size: 11, weight: .semibold))
                 .tracking(1.1)
                 .foregroundStyle(T.onSurfaceVariant)
             HStack(alignment: .firstTextBaseline, spacing: 3) {
-                Text(app.units.distanceText(selectedBucket?.km ?? total, decimals: 1))
+                Text(app.units.distanceText(selectedBucket?.km ?? current?.km ?? 0, decimals: 1))
                     .font(.system(size: 26, weight: .semibold, design: .rounded))
                     .foregroundStyle(T.onSurface)
                 Text(app.units.distanceUnit)
                     .font(.system(size: 13, weight: .medium)).foregroundStyle(T.onSurfaceVariant)
             }
+            // The window total is stated rather than shown as the headline, so
+            // seeing the same figure in two views reads as the fact it is, not
+            // as a control that failed to respond.
+            Text("\(app.units.distanceText(total)) \(app.units.distanceUnit) \(windowLabel)"
+                 + (best.map { $0.km > 0 ? "  ·  best \(app.units.distanceText($0.km)) (\($0.id))" : "" } ?? ""))
+                .font(.system(size: 11))
+                .foregroundStyle(T.onSurfaceVariant)
         }
     }
 
