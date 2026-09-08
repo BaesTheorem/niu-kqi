@@ -71,54 +71,56 @@ sha256  7ed86b1e2b545a9b7efc57eff3f9f56742b97f503202dff8702af25744051a46
   16-bit code, then zero padding and a small trailing value.
 - No printable strings, which is normal for a bare light-controller image.
 
-## Architecture: unconfirmed. M-CORE family is the leading candidate
+## Architecture: unidentified
 
-The image is definitely plain code, not encrypted, but the exact ISA is **not
-established**. An earlier version of this file claimed M-CORE was confirmed; a
-control run disproved the evidence for that, so here is the honest state.
+The image is plain, structured code. Which instruction set it targets is **not
+known**, and two earlier guesses recorded here (M-CORE, then C-SKY) did not
+survive controls. Documented so nobody repeats the dead ends.
 
-**What is solid:**
+**Established:**
 
-1. **It is not any common architecture.** A capstone linear sweep under ARM,
-   Thumb, ARM64, MIPS, PPC, SPARC, RISC-V, SuperH, XCore, SystemZ and
-   TMS320C64x all collapse under ~1.1% coverage. A 35 KB ARM image would carry
-   hundreds of `push {lr}` / `bx lr`; this has 7 and 1.
+1. **Not encrypted, not compressed.** Entropy 6.38 bits/byte, 256 distinct byte
+   values but a spiky histogram: the 16 commonest bytes are 46.4% of the file,
+   dominated by `0x00`. Known ARM64 code profiles the same way (59.3%). Encrypted
+   or packed data is flat (~7.5% and entropy ~7.99). The file also holds
+   internal runs of 64+ zero bytes. It is a flat image with real padding.
+2. **Not any architecture GNU binutils knows.** Swept all **419** valid
+   `objdump -b binary -m ...` architectures across both endiannesses, scoring
+   the invalid-instruction rate. A correct disassembly should sit around 1-5%
+   invalid. The *best* score across the entire sweep was ~14%, and most were far
+   worse. Nothing fits.
+3. **Not ARM/Thumb/ARM64/MIPS/PPC/SPARC/RISC-V/SuperH/XCore/SystemZ/TMS320**
+   (capstone linear sweep, all under ~1.1% coverage).
 
-2. **It is not encrypted or compressed.** Entropy is 6.38 bits/byte, and the
-   image contains large runs of zero padding (1939 words decode as `bkpt`,
-   i.e. `0x0000`). Encrypted or packed data sits at ~7.99. For contrast, the
-   KQi3 `FOC` images circulated by the ScooterHacking community measure 7.990,
-   so NIU *does* encrypt at least some controller images. This LCU image is
-   not one of them.
+**Why the earlier guesses failed.** Both were artifacts of a missing control.
+Structured data decodes "better" than random under *any* decoder, so a gap
+against random proves nothing. The control that matters is **structured code of
+a known-wrong ISA**. Disassembling known ARM64 code as C-SKY:
 
-**What does NOT hold up.** The branch-target test previously cited here is
-worthless on its own. mcore is a dense 16-bit ISA whose branches are short and
-PC-relative, so targets land near the PC no matter what the bytes are:
+| sample                        | invalid as C-SKY LE |
+|-------------------------------|---------------------|
+| this image                    | 16.4%               |
+| **known ARM64 code (control)**| **20.5%**           |
+| KQi3 FOC, encrypted           | 28.5%               |
+| pure random                   | 28.7%               |
 
-| sample                          | entropy | in-range branch targets |
-|---------------------------------|---------|-------------------------|
-| this LCU image                  | 6.38    | 99.8%                   |
-| KQi3 FOC image (encrypted)      | 7.99    | 96.6%                   |
-| **pure random bytes (control)** | 8.00    | **96.3%**               |
+A definitively wrong ISA lands within 4 points of this image, so C-SKY is not
+supported. M-CORE is worse than that: this image scores 23.6% under MCore-BE,
+*above* both the ARM64 control (18.5%) and random (16.8%). Independently, the
+C-SKY disassembly contains **zero call instructions** in 13,496 decoded
+instructions and branches to addresses like `0xfffffcc4`. A 35 KB program with
+no subroutine calls is not a real program.
 
-Random noise scores 96.3%, so 99.8% is a few points above chance, not proof.
-The same caveat applies to the instruction census: under a dense decoder,
-arbitrary bytes also yield a plausible-looking mix of `movi`/`ld.w`/`st.b`. The
-one census difference that does survive is this image's much higher call
-density (`bsr`) and its zero padding, both of which say "real code" without
-saying *which* ISA.
+Note that `objdump` ignores the C-SKY variant suffix in raw binary mode:
+`csky:ck610`, `csky:ck803` and `csky:ck860` produce byte-identical output, and
+`csky:bogus` does not error. Any claim about a specific CK core from this route
+is meaningless.
 
-**Where that leaves it.** A 16-bit big-endian core in the M-CORE/C-SKY family
-remains the best guess: the encoding width fits, the `0xC0000000` code base
-fits, and C-SKY is ubiquitous in Chinese MCUs. But mcore, arc and xtensa are
-all dense decoders that swallow arbitrary bytes, and nothing here separates
-them convincingly. Treat `KAB2FV20.asm` as a working hypothesis, not a
-faithful listing.
-
-**To actually settle it:** disassemble with a real C-SKY binutils
-(`csky-abiv2-elf-objdump -b binary -m csky -EB -D`) and check whether function
-prologues/epilogues pair up and whether call targets land on function starts.
-That structural coherence, not raw branch range, is the test that discriminates.
+**The decisive next step is physical, not analytical:** open the light control
+unit and read the part number off the MCU. That is ground truth in five minutes
+and beats any amount of further guessing. The remaining analytical
+possibilities are a proprietary or uncommon core that binutils does not cover,
+or a container/offset structure meaning the code does not start at byte 0.
 
 ## Reproduce
 
