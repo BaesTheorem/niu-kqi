@@ -36,7 +36,7 @@ struct RidesView: View {
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(T.onSurface)
                     Spacer()
-                    Text("\(app.rides.count) rides")
+                    Text("\(app.actualRides.count) rides")
                         .font(.system(size: 12)).foregroundStyle(T.onSurfaceVariant)
                 }
                 Divider().overlay(T.outline)
@@ -64,7 +64,13 @@ struct RidesView: View {
                     .foregroundStyle(T.onSurfaceVariant)
             }
             .padding(.top, 6)
-            ForEach(day.rides) { ride in RideCard(ride: ride, units: app.units) }
+            ForEach(day.rides) { ride in
+                if ride.isChargingSession {
+                    ChargeCard(ride: ride)
+                } else {
+                    RideCard(ride: ride, units: app.units)
+                }
+            }
         }
     }
 
@@ -124,5 +130,27 @@ struct RideCard: View {
     private func duration(_ s: Int) -> String {
         s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
                   : String(format: "%d:%02d", s / 60, s % 60)
+    }
+}
+
+/// The scooter logs a charge as a track. Shown as what it is rather than as a
+/// 74-minute ride that somehow gained battery, and left out of distance totals.
+struct ChargeCard: View {
+    let ride: Ride
+    var body: some View {
+        Panel(padding: 14) {
+            HStack(spacing: 10) {
+                Icon("battery_charging_full", size: 20).foregroundStyle(T.primary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Charging").font(.system(size: 14, weight: .semibold)).foregroundStyle(T.onSurface)
+                    Text("\(clock(ride.start)) \u{2013} \(clock(ride.end))  \u{00B7}  +\(abs(ride.powerConsumption ?? 0))%")
+                        .font(.system(size: 12)).foregroundStyle(T.onSurfaceVariant)
+                }
+                Spacer()
+            }
+        }
+    }
+    private func clock(_ d: Date) -> String {
+        let f = DateFormatter(); f.dateFormat = "h:mm a"; return f.string(from: d)
     }
 }

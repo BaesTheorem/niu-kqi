@@ -2,12 +2,20 @@ import Foundation
 
 /// One ride as NIU's cloud returns it.
 ///
-/// The server sends both an unambiguous epoch (`startTime`, ms) and its own
-/// `date` field as a yyyyMMdd integer. Those two disagree for any ride that
-/// starts after 11:00 local, because the backend buckets rides into calendar
-/// days in a UTC+8/+9 timezone while reporting the clock times in yours. The
-/// epoch is the trustworthy one, so every date shown in this app is derived
-/// from it and `date` is kept only to show what NIU got wrong.
+/// `startTime` and `endTime` are NOT trustworthy as sent: they run one whole UTC
+/// offset ahead of when the ride happened, which is 5 hours in CDT. The proof is
+/// causal rather than circumstantial. A ride is buffered on the scooter and
+/// uploaded when the phone next connects, and `trackId` carries the upload time
+/// as a leading epoch-ms, so a ride must end before it is uploaded. Three rides
+/// in this account were stamped up to 4.8 hours AFTER the upload that carried
+/// them. Subtracting the local UTC offset is the smallest correction that leaves
+/// zero violations, and it lands the tightest ride 11 minutes before its upload.
+///
+/// The shape of it is a double conversion: a UTC wall clock stored as if it were
+/// local and converted to an epoch a second time. That is why the correction is
+/// the zone offset rather than a constant, and why it should follow DST on its
+/// own. Every ride on this account is from CDT, so the DST half of that is
+/// reasoned, not observed.
 struct Ride: Codable, Identifiable {
     let trackId: String
     let startTime: Int64
@@ -25,26 +33,23 @@ struct Ride: Codable, Identifiable {
         case powerConsumption = "power_consumption"
     }
 
-    var start: Date { Date(timeIntervalSince1970: Double(startTime) / 1000) }
-    var end: Date { Date(timeIntervalSince1970: Double(endTime) / 1000) }
+    /// As-sent, before correction. Only useful for diagnosing the offset.
+    var rawStart: Date { Date(timeIntervalSince1970: Double(startTime) / 1000) }
+
+    private static func corrected(_ ms: Int64) -> Date {
+        let raw = Date(timeIntervalSince1970: Double(ms) / 1000)
+        return raw.addingTimeInterval(TimeInterval(TimeZone.current.secondsFromGMT(for: raw)))
+    }
+
+    var start: Date { Self.corrected(startTime) }
+    var end: Date { Self.corrected(endTime) }
+
+    /// A ride that gained charge was not a ride: it is a charging session the
+    /// scooter logged as one. Negative consumption is the giveaway.
+    var isChargingSession: Bool { (powerConsumption ?? 0) < 0 }
 
     /// The real calendar day, in the phone's timezone.
     var day: Date { Calendar.current.startOfDay(for: start) }
-
-    /// What NIU thinks the day is, parsed back out of its yyyyMMdd integer.
-    var serverDay: Date? {
-        var c = DateComponents()
-        c.year = date / 10000
-        c.month = (date / 100) % 100
-        c.day = date % 100
-        return Calendar.current.date(from: c)
-    }
-
-    /// True when NIU filed this ride under the wrong calendar day.
-    var isMisdated: Bool {
-        guard let s = serverDay else { return false }
-        return !Calendar.current.isDate(s, inSameDayAs: day)
-    }
 
     var km: Double { Double(distance) / 1000 }
 }
@@ -54,8 +59,7 @@ struct RideDay: Identifiable {
     let day: Date
     let rides: [Ride]
     var id: Date { day }
-    var km: Double { rides.reduce(0) { $0 + $1.km } }
-    var correctedCount: Int { rides.filter(\.isMisdated).count }
+    var km: Double { rides.filter { !$0.isChargingSession }.reduce(0) { $0 + $1.km } }
 }
 
 extension Array where Element == Ride {

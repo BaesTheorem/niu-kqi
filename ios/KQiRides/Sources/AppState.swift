@@ -54,18 +54,19 @@ final class AppState: ObservableObject {
 
     var isLoggedIn: Bool { session != nil }
 
-    /// Rides NIU filed under the wrong calendar day.
-    var misdatedCount: Int { rides.filter(\.isMisdated).count }
+    /// Records that are actually rides. The scooter logs a charging session as a
+    /// track too, so counting those would inflate distance with a trip never taken.
+    var actualRides: [Ride] { rides.filter { !$0.isChargingSession } }
 
     var days: [RideDay] { rides.groupedByCorrectedDay() }
 
     var thisWeekKm: Double {
         let cal = Calendar.current
         guard let weekStart = cal.dateInterval(of: .weekOfYear, for: Date())?.start else { return 0 }
-        return rides.filter { $0.start >= weekStart }.reduce(0) { $0 + $1.km }
+        return actualRides.filter { $0.start >= weekStart }.reduce(0) { $0 + $1.km }
     }
 
-    var totalTrackedKm: Double { rides.reduce(0) { $0 + $1.km } }
+    var totalTrackedKm: Double { actualRides.reduce(0) { $0 + $1.km } }
 
     // MARK: - session
 
