@@ -43,11 +43,20 @@ struct RidesView: View {
                 Divider().overlay(T.outline)
                 HStack(spacing: 0) {
                     Stat(value: app.units.distanceText(app.displayOdometerKm, decimals: 0),
-                         unit: app.units.distanceUnit, caption: "Total mileage")
+                         unit: app.units.distanceUnit, caption: "Odometer")
                     Rectangle().fill(T.outline).frame(width: T.hairline, height: 34)
-                    Stat(value: app.units.distanceText(app.thisWeekKm),
-                         unit: app.units.distanceUnit, caption: "This week")
+                    Stat(value: app.units.distanceText(app.totalTrackedKm, decimals: 0),
+                         unit: app.units.distanceUnit, caption: "Logged rides")
                         .padding(.leading, 14)
+                }
+                // Two different measures sitting together look like a
+                // contradiction unless the difference is named.
+                if app.untrackedKm > 1, let from = app.historyStart {
+                    Text("Odometer counts everything the scooter has rolled. Ride logging starts "
+                         + dayMonth(from) + ", so \(app.units.distanceText(app.untrackedKm, decimals: 0)) "
+                         + "\(app.units.distanceUnit) ridden before that is on the odometer only.")
+                        .font(.system(size: 11)).foregroundStyle(T.onSurfaceVariant)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -73,6 +82,10 @@ struct RidesView: View {
                 }
             }
         }
+    }
+
+    private func dayMonth(_ d: Date) -> String {
+        let f = DateFormatter(); f.dateFormat = "MMM d"; return f.string(from: d)
     }
 
     private func dayLabel(_ d: Date) -> String {

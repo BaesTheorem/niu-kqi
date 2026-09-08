@@ -81,6 +81,20 @@ final class AppState: ObservableObject {
         return totalTrackedKm
     }
 
+    /// Distance the scooter has rolled that no ride record covers.
+    ///
+    /// The odometer counts everything; the ride log only holds what the phone
+    /// managed to pull off the scooter and upload. Riding done before the app
+    /// was pairing, or while the buffer wrapped, is on the odometer and nowhere
+    /// else, which makes the two totals disagree for a real reason.
+    var untrackedKm: Double {
+        guard let o = odometerKm, o > 0 else { return 0 }
+        return max(0, o - totalTrackedKm)
+    }
+
+    /// First ride the log actually has, which is where any per-period total starts.
+    var historyStart: Date? { actualRides.map(\.start).min() }
+
     // MARK: - session
 
     func restore() {
