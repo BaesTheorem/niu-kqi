@@ -70,7 +70,21 @@ BITS = {
     },
     "foc_k_realtime_status1": {2048: "ride records waiting to sync", 4096: "fault records waiting to sync"},
     "db_k_realtime_status": {1: "powered on"},
-    "db_k_function_status": {2: "alarm sound OFF (bit clear = on)"},
+    "db_k_function_status": {
+        2: "alarm sound OFF (bit clear = on)",
+        16: "daytime running light: Always On", 32: "daytime running light: Sync with Headlight",
+    },
+    # The app's checkSmartLaunchMode tests 32768 on kick scooters (32 on mopeds).
+    "ecu_bt_status": {32768: "NIU Link Unlock ON (phone-proximity auto unlock/lock)"},
+}
+
+# Enumerated fields, labels from the app's "Lighting and Illumination" screen.  Off is set
+# with foc_k_decorative_light_cmd 3; the mode value it leaves behind is not confirmed yet.
+MODES = {
+    "foc_k_decorative_light_mode": {
+        1: "ambient light: Indicate Power Output", 10: "ambient light: Follow speed - Rainbow",
+        11: "ambient light: Follow speed - Chasing lights", 12: "ambient light: Follow speed - Breathing",
+    },
 }
 
 # Commands the app sends for a kick scooter: (field, value)
@@ -388,6 +402,10 @@ def print_fields(values: dict, as_json: bool = False) -> None:
             extra = f"{v / 10:.1f} km/h"
         if k == "db_k_timestamp" and isinstance(v, int) and v > 0:
             extra = fmt_clock(v)
+        if k in MODES and isinstance(v, int):
+            extra = MODES[k].get(v, f"mode {v} (unlabeled)")
+        if k == "ecu_bt_blekey_signal_threshold" and isinstance(v, int):
+            extra = f"{v} dBm, NIU Link Unlock RSSI threshold"
         if k == "db_k_estimated_mileage" and isinstance(v, int):
             extra = f"{v / 100:.2f} km (if /100)"
         if isinstance(v, int) and k not in ("bms_soc_rt",) and v >= 256 and not extra:

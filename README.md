@@ -102,7 +102,8 @@ kqi firmware pull              # download what NIU will serve (verifies md5) -> 
   session key (BLE 20). CRC-16 is reflected poly 0xA1E8, init 0xFFFF.
 - Commands are plain field writes: `foc_k_cmd` (1 lock, 2 unlock, 5/6 kick-start on/off,
   7/8 cruise, 10/11 custom mode, 12/13 speed unit, 18/19 fast lock) and `db_k_cmd`
-  (1/2 power on/off, 5/6 alarm sound off/on, 9/10/11 daytime light on/off/follow LED,
+  (1/2 power on/off, 5/6 alarm sound off/on, 9/10/11 daytime running light Always On/Off/Sync
+  with Headlight,
   14 security-log ack, 100 factory reset).
 
 ## Confirmed on the live KQi Air
@@ -111,6 +112,22 @@ kqi firmware pull              # download what NIU will serve (verifies md5) -> 
 - The kick scooter is BLE version 20 (service ...`daea51`): AES 20-byte frames, v2 handshake.
 - `bms_soc_rt` is battery percent; `db_k_realtime_status` bit 1 is "powered on".
 - The by-MAC password fetch needs no binding and no ownership; any logged-in account gets it.
+- Standby: with the dashboard off (`db_k_realtime_status` bit 1 clear) the scooter keeps
+  advertising and answers reads and writes. The product manual says only an extended idle
+  puts it to sleep, after which the power button has to be pressed first.
+- `db_k_function_status` bits 16/32 are the daytime running light mode, Always On / Sync
+  with Headlight (neither set = Off), matching `db_k_cmd` 9/11/10.
+- `foc_k_decorative_light_mode` 1/10/11/12 is the ambient light strip mode: Indicate Power
+  Output / Follow speed Rainbow / Chasing lights / Breathing. The app sets it by writing
+  `foc_k_decorative_light_cmd` as 6-byte hex (1, 10, 11, 12; 3 = Off).
+- `ecu_bt_status` bit 32768 is NIU Link Unlock (the app's "Smart Start" screen: auto-unlock
+  when the paired phone is near, auto-lock when it leaves). The app's toggle writes
+  `ecu_bt_cmd` 30/31 (7/8 on older products). `ecu_bt_blekey_signal_threshold` is the
+  unlock RSSI threshold, -80 dBm on this scooter. Read live, not toggled.
+- The app only interprets bit 1 of `db_k_realtime_status`. Bits 2/4/8/16 changed on their
+  own in standby (26, then 22 a few minutes later, then 26 again about ten minutes after that,
+  with `foc_k_realtime_status1` going 4096, 0, 4096 in step) and are unlabeled. A lock state
+  cycling under NIU Link Unlock is the leading guess; not confirmed.
 
 ## Firmware
 
