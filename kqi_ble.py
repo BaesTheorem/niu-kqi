@@ -20,6 +20,7 @@ Bluetooth side (scooter powered on, within range):
     kqi lock | unlock | on | off       # motor lock, dashboard power
     kqi cruise on|off  kickstart on|off  fastlock on|off  alarm on|off
     kqi ebs 0..3  unit 0|1  custom on|off [--max KMH]  daylight on|off|led
+    kqi ambient off|power|rainbow|chase|breathe   # dashboard/ambient light strip
     kqi clock                          # set the scooter clock to now
     kqi cmd 7 | kqi cmd --db 1         # raw foc_k_cmd / db_k_cmd numbers
     kqi monitor [--seconds N]          # print frames the scooter pushes on its own
@@ -88,7 +89,7 @@ MODES = {
 }
 
 # Commands the app sends for a kick scooter: (field, value)
-FOC, DB = "foc_k_cmd", "db_k_cmd"
+FOC, DB, AMB = "foc_k_cmd", "db_k_cmd", "foc_k_decorative_light_cmd"
 COMMANDS = {
     "lock": (FOC, 1), "unlock": (FOC, 2),
     "on": (DB, 1), "off": (DB, 2),
@@ -98,6 +99,11 @@ COMMANDS = {
     "unit 0": (FOC, 12), "unit 1": (FOC, 13),
     "fastlock on": (FOC, 18), "fastlock off": (FOC, 19),
     "daylight on": (DB, 9), "daylight off": (DB, 10), "daylight led": (DB, 11),
+    # Ambient strip effects. The app writes the mode number as a 12-hex-char (6-byte) value,
+    # left-padded; pass the full width because HEX fields are padded on the right.
+    "ambient off": (AMB, "000000000003"), "ambient power": (AMB, "000000000001"),
+    "ambient rainbow": (AMB, "00000000000a"), "ambient chase": (AMB, "00000000000b"),
+    "ambient breathe": (AMB, "00000000000c"),
     "factory-reset": (DB, 100),
 }
 
@@ -934,7 +940,7 @@ def main() -> int:
     s = sub.add_parser("write", help="write one field"); s.add_argument("field"); s.add_argument("value"); s.add_argument("--readback", action="store_true"); s.set_defaults(fn=cmd_write)
     for name in ("lock", "unlock", "on", "off", "factory-reset"):
         s = sub.add_parser(name); s.set_defaults(fn=cmd_simple, cmd_name=name, arg=None)
-    for name in ("alarm", "kickstart", "cruise", "fastlock", "daylight", "unit"):
+    for name in ("alarm", "kickstart", "cruise", "fastlock", "daylight", "unit", "ambient"):
         s = sub.add_parser(name); s.add_argument("arg"); s.set_defaults(fn=cmd_simple, cmd_name=name)
     s = sub.add_parser("cmd", help="raw foc_k_cmd (or --db for db_k_cmd)"); s.add_argument("number", type=int); s.add_argument("--db", action="store_true"); s.set_defaults(fn=cmd_cmd)
     s = sub.add_parser("ebs", help="regen braking level 0-3"); s.add_argument("level", type=int, choices=[0, 1, 2, 3]); s.set_defaults(fn=cmd_ebs)

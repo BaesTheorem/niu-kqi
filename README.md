@@ -68,6 +68,7 @@ kqi cruise on|off  kickstart on|off  fastlock on|off  alarm on|off
 kqi ebs 0|1|2|3                # regen braking level (bits 256/512 of foc_k_function_status1)
 kqi custom on --max 20 | custom off
 kqi daylight on|off|led        # daytime running light mode
+kqi ambient off|power|rainbow|chase|breathe   # ambient light strip (foc_k_decorative_light_cmd)
 kqi unit 0|1                   # dashboard speed unit index (0/1; which is mph is confirmed live)
 kqi clock                      # writes db_k_timestamp = now
 kqi cmd 7 | kqi cmd --db 9     # any foc_k_cmd / db_k_cmd number
