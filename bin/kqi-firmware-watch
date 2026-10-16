@@ -1,0 +1,20 @@
+#!/bin/sh
+# kqi-firmware-watch: daily launchd check for newly published KQi firmware.
+#
+# Runs `kqi firmware watch` (cloud only, no Bluetooth) and sends its ALERT lines
+# as one notification. kqi_ble.py deduplicates the alerts in
+# firmware/watch-state.json, so a dead login or a new image alerts once.
+# Set KQI_NOTIFY to another notifier; with no notifier the alerts go to stdout.
+DIR=$(cd "$(dirname "$0")/.." && pwd)
+NOTIFY=${KQI_NOTIFY:-"$HOME/Documents/Exobrain harness/mist-voice/bin/mist-notify"}
+out=$("$DIR/.venv/bin/python" "$DIR/kqi_ble.py" firmware watch 2>&1)
+rc=$?
+printf '%s: rc=%s\n%s\n' "$(date '+%Y-%m-%d %H:%M')" "$rc" "$out"
+alerts=$(printf '%s\n' "$out" | sed -n 's/^ALERT: //p')
+[ -n "$alerts" ] || exit 0
+if [ -x "$NOTIFY" ]; then
+  "$NOTIFY" "$alerts" "KQi firmware" none "$DIR/firmware" --discord \
+    --context "kqi firmware watch exited $rc. Output:
+$out"
+fi
+exit 0

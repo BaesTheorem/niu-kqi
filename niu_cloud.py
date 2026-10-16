@@ -43,6 +43,19 @@ class CloudError(Exception):
     pass
 
 
+class AuthError(CloudError):
+    """The saved login is no longer accepted; only `kqi login` fixes it."""
+
+
+# 1131 "Incorrect Login Details" (dead access token), 20017 "Invalid refresh token".
+AUTH_STATUSES = {1131, 20017}
+
+
+def _niu_error(j: dict) -> CloudError:
+    cls = AuthError if j.get("status") in AUTH_STATUSES else CloudError
+    return cls(f"NIU says: {j.get('desc') or j} (status {j.get('status')})")
+
+
 def _headers(token: str | None = None, json_body: bool = False) -> dict:
     h = {"User-Agent": USER_AGENT, "X-No-Encrypt": "1", "Accept": "application/json"}
     if token:
@@ -75,7 +88,7 @@ def _call(method: str, url: str, token: str | None = None, form: dict | None = N
     except ValueError:
         raise CloudError(f"non-JSON reply from {url}: {body[:200]}") from None
     if j.get("status", 0) != 0:
-        raise CloudError(f"NIU says: {j.get('desc') or j} (status {j.get('status')})")
+        raise _niu_error(j)
     return j.get("data")
 
 
@@ -213,7 +226,7 @@ def ota_checkupdate(token: str, sn: str, devices: list[dict], timeout: int = 30)
     except ValueError:
         raise CloudError(f"non-JSON reply from ota/checkupdate: {txt[:200]}") from None
     if j.get("status", 0) != 0:
-        raise CloudError(f"NIU says: {j.get('desc') or j} (status {j.get('status')})")
+        raise _niu_error(j)
     return j.get("data") or {}
 
 
@@ -254,13 +267,45 @@ def ota_find_image(token: str, sn: str, devicetype: str, installed_version: str)
     back a download url for `devicetype`.  Returns {claimed, version, url, size,
     md5} or None if the cloud has no published image for it."""
     for claim in _prior_versions(installed_version):
-        data = ota_checkupdate(token, sn, [{"devicetype": devicetype,
-                                            "soft_version": claim, "hard_version": ""}])
-        for it in data.get("items", []):
-            if it.get("devicetype") == devicetype and it.get("url"):
-                return {"claimed": claim, "version": it.get("soft_version", ""),
-                        "url": it["url"], "size": int(it.get("size", 0)), "md5": it.get("md5", "")}
+        img = ota_offer(token, sn, devicetype, claim)
+        if img:
+            return img
     return None
+
+
+def ota_offer(token: str, sn: str, devicetype: str, claim: str) -> dict | None:
+    """One checkupdate for one claimed version.  Returns {claimed, version, url,
+    size, md5} when the server offers an image, else None."""
+    data = ota_checkupdate(token, sn, [{"devicetype": devicetype, "soft_version": claim,
+                                        "hard_version": ""}])
+    for it in data.get("items", []):
+        if it.get("devicetype") == devicetype and it.get("url"):
+            return {"claimed": claim, "version": it.get("soft_version", ""),
+                    "url": it["url"], "size": int(it.get("size", 0)), "md5": it.get("md5", "")}
+    return None
+
+
+# Region codes in NIU version tags (positions 4-5 of a KQi tag): 01 = EU,
+# 13 = US, 38 = DE, from the community KQi2/KQi3 images (K2E01J23, K2E13J23,
+# K2E38J23).  Only the motor controller carries one; DB/LCU tags have "2F" there
+# and the BMS has "36", the pack voltage.
+OTA_REGIONS = ("01", "13", "38")
+_REGION_TAG = re.compile(r"^(K[A-Z0-9][A-Z])(\d{2})([A-Z])(\d{2})$")
+
+
+def region_variants(ver: str, regions=OTA_REGIONS, span: int = 20):
+    """Claims to try for other regions' builds of the same controller: each
+    other region code, with the counter from the installed one down to 0.
+    KAE13G19 -> KAE01G19, KAE01G18, ... KAE38G19, ..."""
+    m = _REGION_TAG.match(ver)
+    if not m:
+        return
+    pre, reg, letter, num = m.group(1), m.group(2), m.group(3), int(m.group(4))
+    for r in regions:
+        if r == reg:
+            continue
+        for n in range(num, max(-1, num - span - 1), -1):
+            yield f"{pre}{r}{letter}{n:02d}"
 
 
 def ota_download(url: str, timeout: int = 60) -> bytes:

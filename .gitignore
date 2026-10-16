@@ -17,3 +17,4 @@ ios/Config/Signing.xcconfig
 ios/KQiRides/Resources/fields.json
 ios/KQiRides/Resources/MaterialSymbolsSharp.ttf
 ios/KQiRides/Resources/Assets.xcassets/
+firmware/watch-state.json

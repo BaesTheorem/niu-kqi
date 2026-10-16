@@ -25,6 +25,7 @@ Bluetooth side (scooter powered on, within range):
     kqi cmd 7 | kqi cmd --db 1         # raw foc_k_cmd / db_k_cmd numbers
     kqi monitor [--seconds N]          # print frames the scooter pushes on its own
     kqi raw 0121...                    # send a hex frame and print what comes back
+    kqi firmware check|pull|probe|watch  # OTA cloud: versions, images, region probe, new-release check
 
 The wire protocol lives in niu_proto.py; niu_cloud.py does the credential
 fetch.  Everything was recovered from the NIU Android app (5.12.2).
@@ -846,10 +847,15 @@ def cmd_firmware(args):
         log("no serial known; pass --sn (a kick scooter's serial is its binding-QR content)")
         return 1
     sess = C.session()
+    outdir = args.out or os.path.join(os.path.dirname(os.path.abspath(__file__)), "firmware")
+    if args.action == "watch":
+        return _firmware_watch(sess["token"], sn, outdir)
     installed = C.ota_installed_versions(sess["token"], sn)
     if not installed:
         log(f"the cloud reported no controllers for serial {sn!r}")
         return 1
+    if args.action == "probe":
+        return _firmware_probe(sess["token"], sn, installed, outdir)
 
     if args.action == "check":
         if args.json:
@@ -860,7 +866,6 @@ def cmd_firmware(args):
             print(f"  {dt:<7} {info['name']:<20} {info['version']}")
         return 0
 
-    outdir = args.out or os.path.join(os.path.dirname(os.path.abspath(__file__)), "firmware")
     os.makedirs(outdir, exist_ok=True)
     mpath = os.path.join(outdir, "manifest.json")
     manifest = C.load_json(mpath) or {}
@@ -880,17 +885,11 @@ def cmd_firmware(args):
             continue
         img = C.ota_find_image(sess["token"], sn, dt, info["version"])
         if img:
-            data = C.ota_download(img["url"])
-            md5 = hashlib.md5(data).hexdigest()
-            ok = (not img["md5"]) or md5 == img["md5"]
-            dest = os.path.join(outdir, f"{img['version'] or dt}.bin")
-            with open(dest, "wb") as f:
-                f.write(data)
+            got_img = _save_image(outdir, dt, img)
             rec.update({"downloadable": True, "version": img["version"], "url": img["url"],
-                        "claimed_prior": img["claimed"], "size": len(data), "md5": md5,
-                        "md5_ok": ok, "file": os.path.basename(dest)})
+                        "claimed_prior": img["claimed"], "size": got_img["size"], "md5": got_img["md5"],
+                        "md5_ok": got_img["md5_ok"], "file": got_img["file"]})
             got += 1
-            print(f"  {dt:<7} {img['version']:<10} {len(data):>7} B  md5 {'ok' if ok else 'MISMATCH!'}  -> {dest}")
         elif have:
             rec.update({k: prev[k] for k in keep if k in prev})
             print(f"  {dt:<7} {info['version']:<10} no new offer; kept {prev['file']}")
@@ -903,6 +902,138 @@ def cmd_firmware(args):
         f.write("\n")
     print(f"wrote {mpath}  ({got} newly downloaded)")
     return 0
+
+
+def _save_image(outdir: str, dt: str, img: dict) -> dict:
+    """Download an offered image into outdir, check its md5, print one line."""
+    os.makedirs(outdir, exist_ok=True)
+    data = C.ota_download(img["url"])
+    md5 = hashlib.md5(data).hexdigest()
+    ok = (not img["md5"]) or md5 == img["md5"]
+    dest = os.path.join(outdir, f"{img['version'] or dt}.bin")
+    with open(dest, "wb") as f:
+        f.write(data)
+    print(f"  {dt:<7} {img['version']:<10} {len(data):>7} B  md5 {'ok' if ok else 'MISMATCH!'}  -> {dest}")
+    return {"file": os.path.basename(dest), "path": dest, "size": len(data), "md5": md5, "md5_ok": ok}
+
+
+# Positive control for every OTA experiment: claiming the LCU release below the
+# installed one has always produced a URL.  When it does not, the endpoint is
+# throttling, and every miss in that window means nothing.
+OTA_CONTROL = ("LCU", "KAB2FV19")
+
+
+def _ota_control_ok(token: str, sn: str) -> bool:
+    return C.ota_offer(token, sn, *OTA_CONTROL) is not None
+
+
+def _firmware_probe(token: str, sn: str, installed: dict, outdir: str) -> int:
+    """Claim other regions' motor-controller versions (KAE13G19 -> KAE01G19,
+    KAE38G19, ...) to see whether the cloud serves an EU or DE KQi Air FOC image.
+    A positive control runs first and every 10 claims; a run that loses it stops."""
+    foc = (installed.get("FOC") or {}).get("version", "")
+    claims = list(C.region_variants(foc))
+    if not claims:
+        log(f"FOC version {foc!r} has no region field to vary")
+        return 1
+    if not _ota_control_ok(token, sn):
+        log("control failed before the probe: the endpoint is throttling; try again later")
+        return 2
+    print(f"control ok ({OTA_CONTROL[0]} {OTA_CONTROL[1]} offers an image); probing {len(claims)} FOC claims")
+    hits, tried, dead_regions = {}, [], set()
+    for i, claim in enumerate(claims, 1):
+        region = claim[3:5]
+        if region in dead_regions:
+            continue
+        img = C.ota_offer(token, sn, "FOC", claim)
+        tried.append(claim)
+        if img:
+            print(f"  HIT  claim {claim} -> {img['version']} {img['url']}")
+            hits[claim] = {**img, **_save_image(outdir, "FOC", img)}
+            dead_regions.add(region)  # lower counters offer the same newest image
+        if i % 10 == 0 or i == len(claims):
+            if not _ota_control_ok(token, sn):
+                log(f"control lost after claim {claim}: the misses since the last control are inconclusive")
+                _record_probe(outdir, tried, hits, complete=False)
+                return 2
+        time.sleep(1)
+    print(f"tried {len(tried)} claims, {len(hits)} offered an image; control held throughout")
+    _record_probe(outdir, tried, hits, complete=True)
+    return 0 if hits else 3
+
+
+def _record_probe(outdir: str, tried: list, hits: dict, complete: bool) -> None:
+    mpath = os.path.join(outdir, "manifest.json")
+    manifest = C.load_json(mpath) or {}
+    manifest.setdefault("probes", []).append({"at": int(time.time()), "devicetype": "FOC",
+                                              "tried": tried, "hits": hits, "control_held": complete})
+    with open(mpath, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=1, sort_keys=True)
+        f.write("\n")
+
+
+def _firmware_watch(token: str, sn: str, outdir: str) -> int:
+    """One unattended check for newly published firmware, for a launchd job.
+
+    For each controller, claim the INSTALLED version: the server offers a URL only
+    when a newer release exists.  Then run the positive control.  Prints `ALERT:`
+    lines for the wrapper to send (deduplicated through firmware/watch-state.json)
+    and exits 0 nothing new, 10 new image, 2 inconclusive (throttled), 4 login dead.
+    """
+    spath = os.path.join(outdir, "watch-state.json")
+    st = C.load_json(spath) or {}
+    st["last_run"] = int(time.time())
+    alerts: list[str] = []
+
+    def done(rc: int) -> int:
+        st["last_rc"] = rc
+        C.save_json(spath, st)
+        for a in alerts:
+            print(f"ALERT: {a}")
+        return rc
+
+    try:
+        installed = C.ota_installed_versions(token, sn)
+        found = {}
+        for dt, info in installed.items():
+            img = C.ota_offer(token, sn, dt, info["version"])
+            if img:
+                found[dt] = {**img, **_save_image(outdir, dt, img)}
+            time.sleep(1)
+        control = _ota_control_ok(token, sn)
+    except C.AuthError as e:
+        if not st.get("auth_alerted"):
+            alerts.append(f"KQi firmware watch: the NIU login is dead ({e}). Run: kqi login <account>")
+            st["auth_alerted"] = True
+        return done(4)
+    st["auth_alerted"] = False
+
+    versions = {dt: i["version"] for dt, i in installed.items()}
+    before = st.get("installed") or {}
+    for dt, v in versions.items():
+        if before.get(dt) and before[dt] != v:
+            alerts.append(f"KQi {dt} firmware changed on the scooter: {before[dt]} -> {v}")
+    st["installed"] = versions
+
+    if found:
+        seen = st.setdefault("offered", {})
+        for dt, img in found.items():
+            print(f"  {dt:<7} new release {img['version']} ({img['size']} B, md5 {'ok' if img['md5_ok'] else 'MISMATCH'})")
+            if seen.get(dt) != img["version"]:
+                alerts.append(f"NIU published new KQi {dt} firmware {img['version']} "
+                              f"(installed {versions.get(dt)}); downloaded to {img['path']}")
+                seen[dt] = img["version"]
+        st["inconclusive_runs"] = 0
+        return done(10)
+    if not control:
+        n = st["inconclusive_runs"] = st.get("inconclusive_runs", 0) + 1
+        print(f"  no offers, but the control failed: inconclusive ({n} in a row)")
+        if n == 4:
+            alerts.append("KQi firmware watch: the OTA control has failed 4 runs in a row; NIU may have changed the endpoint")
+        return done(2)
+    st["inconclusive_runs"] = 0
+    print("  no new firmware for " + ", ".join(f"{dt} {v}" for dt, v in versions.items()) + "; control ok")
+    return done(0)
 
 
 def cmd_fields(args):
@@ -929,7 +1060,7 @@ def main() -> int:
     s = sub.add_parser("scooters", help="vehicles bound to the account"); s.set_defaults(fn=cmd_scooters, sync=True)
     s = sub.add_parser("setup", help="fetch the scooter's BLE credentials"); s.add_argument("--sn"); s.add_argument("--mac", help="fetch by BLE MAC (kick scooters; see README for how to read it)"); s.set_defaults(fn=cmd_setup, sync=True)
     s = sub.add_parser("fields", help="list known field names"); s.add_argument("--all", action="store_true"); s.add_argument("grep", nargs="?"); s.set_defaults(fn=cmd_fields, sync=True)
-    s = sub.add_parser("firmware", help="check/pull controller firmware via NIU's OTA cloud"); s.add_argument("action", choices=["check", "pull"]); s.add_argument("--sn", help="serial (kick scooters: the binding-QR content)"); s.add_argument("--out", help="output dir for pull (default: firmware/)"); s.add_argument("--refresh", action="store_true", help="re-download even if the image is already present"); s.set_defaults(fn=cmd_firmware, sync=True)
+    s = sub.add_parser("firmware", help="check/pull controller firmware via NIU's OTA cloud"); s.add_argument("action", choices=["check", "pull", "probe", "watch"]); s.add_argument("--sn", help="serial (kick scooters: the binding-QR content)"); s.add_argument("--out", help="output dir for pull (default: firmware/)"); s.add_argument("--refresh", action="store_true", help="re-download even if the image is already present"); s.set_defaults(fn=cmd_firmware, sync=True)
 
     s = sub.add_parser("probe", help="no-credential GATT dump + unauthenticated read attempt"); s.add_argument("--name"); s.add_argument("--seconds", type=float, default=8.0); s.add_argument("--read-all", action="store_true"); s.add_argument("--linger", type=float, default=2.0); s.set_defaults(fn=cmd_probe)
     s = sub.add_parser("mac", help="print the scooter BLE MAC (macOS, connects briefly)"); s.add_argument("--name"); s.add_argument("--seconds", type=float, default=8.0); s.set_defaults(fn=cmd_mac)

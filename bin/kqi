@@ -64,7 +64,7 @@ if [ "$1" = "--rebuild" ]; then shift; build_app; fi
 for a in "$@"; do
   case "$a" in
     -*) continue ;;
-    login|scooters|fields|help) exec "$PY" "$DIR/kqi_ble.py" "$@" ;;
+    login|scooters|fields|firmware|help) exec "$PY" "$DIR/kqi_ble.py" "$@" ;;
     setup) case " $* " in *" auto "*) break ;;  # `setup --mac auto` needs Bluetooth
            *) exec "$PY" "$DIR/kqi_ble.py" "$@" ;; esac ;;
     *) break ;;

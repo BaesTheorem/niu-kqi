@@ -145,6 +145,22 @@ verifies its md5. On a current KQi Air only the light unit has a published image
 (the rest are at factory versions with no OTA update). The image is plain (unencrypted) code whose instruction set is still
 unidentified; see `firmware/ANALYSIS.md`.
 
+Two more actions look for the images NIU has not served yet:
+
+- `kqi firmware probe` claims other regions' motor-controller versions (the US
+  `KAE13G19` becomes the EU `KAE01G19`, the DE `KAE38G19`, and lower counters) to
+  find out if the cloud serves another region's KQi Air FOC image. Downloads go
+  to `firmware/`, and each run goes into the manifest.
+- `kqi firmware watch` is one unattended check for a new release. It claims each
+  controller's installed version, so the server offers a URL only when NIU has
+  published something newer. `bin/kqi-firmware-watch` runs it every day from
+  `launchd/com.exobrain.kqi-firmware-watch.plist` and sends any alert.
+
+Both run a positive control: the light unit claim `KAB2FV19` has always
+produced a URL. When the control fails, the endpoint is throttling, and the run
+reports "inconclusive", not "nothing published". A dead login exits 4 and
+alerts once.
+
 ## Known unknowns
 
 - Bit meanings for the status words live in `BITS` in `kqi_ble.py`; entries marked `(?)`
