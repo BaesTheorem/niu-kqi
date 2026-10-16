@@ -7,7 +7,7 @@ KQi Air controller firmware, pulled from NIU's update cloud, plus the analysis.
 - `manifest.example.json` - versions, download URL, size and md5 of every controller's
   firmware (facts, not the binary).
 - `ANALYSIS.md` - how the image was obtained, its format, and the architecture
-  work (it is a 16-bit big-endian M-CORE-family core).
+  work (the instruction set is still unidentified; M-CORE and C-SKY failed their controls).
 - `disasm.sh` - regenerates a best-effort disassembly from an image.
 
 ## What is NOT tracked (gitignored)
