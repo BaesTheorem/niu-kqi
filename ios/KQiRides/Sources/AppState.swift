@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 /// Tiny Keychain wrapper: the NIU session token is a bearer credential for the
 /// account, so it does not belong in UserDefaults.
@@ -57,6 +58,21 @@ final class AppState: ObservableObject {
     }
 
     let ble = ScooterBLE()
+
+    /// A weak handle so an App Intent (Siri, the Action button, an NFC-triggered
+    /// Shortcut) can reach the one live app state. The app process is launched
+    /// before the intent runs, so this is set by then; nil only means the intent
+    /// fired before `init`, which does not happen in practice.
+    static weak var shared: AppState?
+
+    /// A short status line shown over the whole app while an externally
+    /// triggered command (URL scheme or App Intent) connects and runs. The UI
+    /// buttons use their own local toast; this is the only feedback an NFC tap
+    /// gets, because the tap does not go through any button.
+    @Published var actionBanner: String?
+    private var bannerClear: Task<Void, Never>?
+
+    init() { AppState.shared = self }
 
     var isLoggedIn: Bool { session != nil }
 
@@ -296,4 +312,72 @@ final class AppState: ObservableObject {
     }
 
     func pauseScanning() { ble.pauseScanning() }
+
+    // MARK: - external triggers (URL scheme, App Intents, NFC)
+
+    /// The commands an outside trigger is allowed to send. Deliberately a short
+    /// allowlist, not the full `Cmd.table`: an NFC tag or a Shortcut must never
+    /// be able to reach `factory-reset`, and an unknown action is a typo, not an
+    /// instruction to forward to the scooter.
+    static let externalCommands: [String: (running: String, done: String)] = [
+        "unlock": ("Unlocking", "Unlocked"),
+        "lock": ("Locking", "Locked"),
+        "on": ("Turning dashboard on", "Dashboard on"),
+        "off": ("Turning dashboard off", "Dashboard off"),
+    ]
+
+    /// Handle a `kqirides://<action>` URL opened by a Shortcut or a scanned tag.
+    func handle(url: URL) {
+        guard url.scheme?.lowercased() == "kqirides" else { return }
+        let action = (url.host ?? url.lastPathComponent).lowercased()
+        Task { await performExternal(action) }
+    }
+
+    /// Connect if needed, wait for the link, then run one allowlisted command,
+    /// reporting progress through `actionBanner`. This is the single path every
+    /// hands-free trigger uses, so the behaviour is identical whether the unlock
+    /// came from Siri, the Action button or a tap on an NFC sticker.
+    func performExternal(_ action: String) async {
+        guard let labels = AppState.externalCommands[action] else {
+            showBanner("Unknown action", haptic: .error)
+            return
+        }
+        guard isLoggedIn else {
+            showBanner("Open KQi Air and sign in first", haptic: .error)
+            return
+        }
+        showBanner("\(labels.running)…", sticky: true)
+        await ble.connect()
+        var ready = false
+        for _ in 0..<30 {            // up to ~15 s for a cold scan + handshake
+            if ble.state == .ready { ready = true; break }
+            if case .failed = ble.state { break }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        guard ready else {
+            showBanner("Couldn't reach the scooter. Is it awake and in range?", haptic: .error)
+            return
+        }
+        do {
+            try await ble.run(action)
+            showBanner("\(labels.done) ✓", haptic: .success)
+            await refreshStatus()
+        } catch {
+            showBanner(error.localizedDescription, haptic: .error)
+        }
+    }
+
+    private func showBanner(_ text: String,
+                            sticky: Bool = false,
+                            haptic type: UINotificationFeedbackGenerator.FeedbackType? = nil) {
+        if let type { UINotificationFeedbackGenerator().notificationOccurred(type) }
+        actionBanner = text
+        bannerClear?.cancel()
+        guard !sticky else { return }
+        bannerClear = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_600_000_000)
+            guard !Task.isCancelled else { return }
+            self?.actionBanner = nil
+        }
+    }
 }

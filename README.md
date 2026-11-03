@@ -82,6 +82,41 @@ kqi firmware pull              # download what NIU will serve (verifies md5) -> 
 `--json` on `status`/`read`, `-v` to print every frame, `-y` to skip confirmations,
 `--address` to skip scanning, `--family 1|2|10` to force a frame family.
 
+## iPhone app: KQi Rides
+
+`ios/` is a small SwiftUI app that does the same reads, settings and commands over
+Bluetooth, with ride history and charts. Build it with `ios/scripts/build.sh` (a plain
+compile check), or `ios/scripts/build.sh --device` to sign for a real iPhone after you
+fill `ios/Config/Signing.xcconfig` with a team id.
+
+### Tap an NFC sticker to unlock
+
+The app exposes a URL scheme and two App Intents, so a phone action can unlock the
+scooter without opening the app by hand:
+
+- URL scheme: `kqirides://unlock`, `kqirides://lock`, `kqirides://on`, `kqirides://off`.
+- App Intents (Siri, the Action button, Shortcuts): "Unlock KQi Air", "Lock KQi Air".
+
+Each one brings the app to the front, connects, waits for the link, then sends one
+command from a fixed allowlist (never `factory-reset`) and reports the result in a
+banner at the top of the screen.
+
+To set up a tap-to-unlock sticker on the iPhone:
+
+1. Get any NTAG21x sticker (NTAG213/215/216). A blank tag is fine: a Shortcuts NFC
+   automation keys on the tag's hardware id, so the tag does not have to hold any data.
+2. Shortcuts app -> Automation -> New -> NFC -> Scan, and hold the phone to the sticker
+   to register it.
+3. Add the action "Unlock KQi Air" (or "Open URL" with `kqirides://unlock`).
+4. Turn off "Ask Before Running" so one tap is enough.
+5. Stick the tag on the stem or deck. Tap the phone to it with the scooter awake and in
+   range.
+
+This does not use any NFC reader on the scooter, and an iPhone cannot pretend to be an
+NFC card that a reader scans. The phone reads a cheap passive sticker and sends the
+unlock over Bluetooth, which works whether or not the scooter has its own NFC hardware
+(the base KQi Air has none; the NFC card feature is a KQi Air X and moped feature).
+
 ## Protocol in one screen
 
 - One GATT service per vehicle: `8ec94e30-f315-4f60-9fb8-838830daea5X`, notify on

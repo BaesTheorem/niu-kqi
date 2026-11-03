@@ -11,6 +11,7 @@ struct KQiRidesApp: App {
                 .environmentObject(app)
                 .tint(T.primary)
                 .onAppear { app.restore() }
+                .onOpenURL { app.handle(url: $0) }
                 .onChange(of: phase) { _, new in
                     // Coming back from the background is the same situation as a
                     // cold open: the link is gone and the scooter may be in range.
@@ -40,7 +41,37 @@ struct RootView: View {
                     .tabItem { Label { Text("Account") } icon: { IconImage.of("account_circle") } }
             }
             .task { await app.autoConnect() }
+            .overlay(alignment: .top) { ActionBanner(text: app.actionBanner) }
         }
+    }
+}
+
+/// The only feedback a hands-free trigger (Siri, Action button, NFC tap) gets,
+/// since none of them press a button with its own toast. Driven by
+/// `AppState.actionBanner`.
+struct ActionBanner: View {
+    let text: String?
+
+    var body: some View {
+        ZStack {
+            if let text {
+                HStack(spacing: 8) {
+                    if text.hasSuffix("…") {
+                        ProgressView().controlSize(.small).tint(T.onPrimaryContainer)
+                    }
+                    Text(text)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(T.onPrimaryContainer)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 16).padding(.vertical, 11)
+                .background(T.primaryContainer, in: Capsule())
+                .overlay(Capsule().stroke(T.outline, lineWidth: T.hairline))
+                .padding(.top, 8).padding(.horizontal, 16)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: text)
     }
 }
 

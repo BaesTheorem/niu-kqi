@@ -40,6 +40,14 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         ITSAppUsesNonExemptEncryption: false
+        # kqirides://unlock , kqirides://lock , kqirides://on , kqirides://off .
+        # An NFC-triggered Shortcut opens one of these, or runs the matching App
+        # Intent directly; both land in AppState.performExternal via its allowlist.
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLName: com.alexhedtke.KQiRides
+            CFBundleURLSchemes:
+              - kqirides
         UIAppFonts:
           - MaterialSymbolsSharp.ttf
         # CoreBluetooth crashes on first use without this key, rather than
