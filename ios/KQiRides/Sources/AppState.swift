@@ -342,6 +342,12 @@ final class AppState: ObservableObject {
             showBanner("Unknown action", haptic: .error)
             return
         }
+        // A cold launch straight from a tag can deliver the URL a beat before
+        // `restore()` has read the saved session, so give that a moment rather
+        // than falsely reporting "sign in first".
+        for _ in 0..<8 where !isLoggedIn {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
         guard isLoggedIn else {
             showBanner("Open KQi Air and sign in first", haptic: .error)
             return
