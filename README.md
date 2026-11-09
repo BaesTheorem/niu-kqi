@@ -100,9 +100,15 @@ button that turns the scooter's dashboard on without opening the app.
   Apple documents that such an intent runs in the app's process, launched in the
   background, and not in the widget extension ("Adding interactivity to widgets and
   Live Activities"). The extension only draws state from the App Group.
-- The app reconnects to the scooter it last verified, by its saved CoreBluetooth
-  identifier, with no scan. It reads `db_k_realtime_status`, sends `db_k_cmd = 1`
-  only when bit 1 is clear, and reads the bit back. That write is what the NIU app's
+- The app finds the scooter without a scan when it can. A link that the phone
+  has open comes first. That is usually the NIU app's link, and it is accepted by
+  the saved identifier or by the account's BLE name. A scooter with a link up stops
+  advertising, so a scan cannot find it. Next comes a pending connect to the saved
+  CoreBluetooth identifier, which in the background runs for the full 12 s
+  deadline. A scan is the last resort, for a phone that has no verified
+  scooter on record. The app then reads `db_k_realtime_status`, sends `db_k_cmd = 1` only when
+  bit 1 is clear, and polls the bit for up to 3 s. The dashboard takes a moment to
+  boot, so one read at 400 ms reported "off" for a power-on that worked. That write is what the NIU app's
   power button sends for a kick scooter (`acc_on` in its command executor), with the
   same 2 s wait for the ack and one retry while the link is up. The NIU app also
   sends the write one more time at 5.5 s if nothing has answered; this app does not.
@@ -111,15 +117,24 @@ button that turns the scooter's dashboard on without opening the app.
   leaves its own link up. Closing it could look to NIU Link Unlock like the phone
   leaving.
 - The scooter's Bluetooth credentials are cached in the Keychain, so a tap needs no
-  NIU cloud request. Open the app one time, signed in, with the scooter connected,
-  before the first tap: that session caches the credentials and saves the scooter's
-  identifier.
-- On a locked phone a widget button waits for Face ID, which is Apple's rule. Apple
-  lets an app require an unlock before a control acts. This control does not ask for
-  one.
+  NIU cloud request. A NIU sign-in in the app puts them there. As an alternative, a Mac
+  that holds them in `secrets/scooter.json` can give them to the app, with no sign-in. Copy a JSON
+  file with the `bleinfo` keys (`bleMac`, `bleName`, `blePassword`, `bleAes`,
+  `bleSign`) to the app's `Documents/ble-import.json`. The app moves it into the
+  Keychain at its next launch and deletes the file:
+
+```sh
+xcrun devicectl device copy to --device <UDID> --domain-type appDataContainer \
+  --domain-identifier com.alexhedtke.KQiRides --source ble-import.json \
+  --destination Documents/ble-import.json
+```
+- On a locked phone a widget button waits for Face ID, which is Apple's rule. An app
+  can make an unlock necessary before a control acts. This control does not.
 - A sleeping scooter does not advertise, so no Bluetooth command can wake it. Only
   its power button can.
-- Each tap appends one line to `Documents/power-log.jsonl` in the app's container.
+- Each tap appends a start line and a result line to `Documents/power-log.jsonl` in
+  the app's container. The result line records how the app found the scooter and the
+  time each step took.
   Read it from the Mac with:
 
 ```sh

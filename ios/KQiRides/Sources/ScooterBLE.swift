@@ -96,6 +96,7 @@ final class ScooterBLE: NSObject, ObservableObject {
     /// an answer within seconds.
     func connectNow(timeout: TimeInterval) async throws {
         if state == .ready { return }
+        resetForAttempt()
         await connect()
         let end = Date().addingTimeInterval(timeout)
         while Date() < end {
@@ -107,17 +108,38 @@ final class ScooterBLE: NSObject, ObservableObject {
         throw NIUProto.Err(msg: "Scooter not found. Is it awake?")
     }
 
-    /// The verified scooter, if iOS can hand it back without a scan: either a
-    /// link that is already up (the NIU app, or this app a moment ago) or the
-    /// saved identifier. iOS keeps both across launches.
-    private func savedScooter() -> (CBPeripheral, String)? {
-        guard let s = UserDefaults.standard.string(forKey: Self.savedScooterKey),
-              let id = UUID(uuidString: s) else { return nil }
-        let svcs = NIUProto.services.keys.map { CBUUID(string: $0) }
-        if let p = central.retrieveConnectedPeripherals(withServices: svcs).first(where: { $0.identifier == id }) {
-            return (p, "already connected")
+    /// Drop whatever an earlier wake left running. A retry loop that resumed
+    /// from a suspended app had kept the state "scanning", so a tap's
+    /// `beginScan()` returned at once and the saved identifier was never tried.
+    private func resetForAttempt() {
+        retryTask?.cancel(); retryTask = nil
+        scanTimer?.invalidate()
+        central.stopScan()
+        savedTried = false
+        if state.isBusy {
+            if let p = peripheral, p.state != .connected {
+                central.cancelPeripheralConnection(p)
+                peripheral = nil
+            }
+            state = .idle
         }
-        if let p = central.retrievePeripherals(withIdentifiers: [id]).first { return (p, "saved id") }
+        if case .failed = state { state = .idle }
+    }
+
+    /// The scooter, if iOS can hand it back without a scan. A link the phone
+    /// already has comes first: that is usually the NIU app's, and a scooter
+    /// with a link up stops advertising, so no scan can see it. It is accepted
+    /// by saved identifier or by the account's BLE name. Then the saved
+    /// identifier, which iOS keeps across launches.
+    private func savedScooter() -> (CBPeripheral, String)? {
+        let svcs = NIUProto.services.keys.map { CBUUID(string: $0) }
+        let savedID = UserDefaults.standard.string(forKey: Self.savedScooterKey).flatMap { UUID(uuidString: $0) }
+        let want = creds?.bleName ?? ""
+        for p in central.retrieveConnectedPeripherals(withServices: svcs) {
+            let nameMatch = !want.isEmpty && (p.name ?? "").caseInsensitiveCompare(want) == .orderedSame
+            if p.identifier == savedID || nameMatch { return (p, "already connected") }
+        }
+        if let id = savedID, let p = central.retrievePeripherals(withIdentifiers: [id]).first { return (p, "saved id") }
         return nil
     }
 
@@ -159,6 +181,14 @@ final class ScooterBLE: NSObject, ObservableObject {
                 central.connect(p)
             }
             scanTimer?.invalidate()
+            // In the background, keep the pending connect for the whole deadline.
+            // Apple's background guide says that when every scanning app is in
+            // the background, scans run at a longer interval and can take longer
+            // to find a peripheral, and that connect requests do not time out. On 2026-11-09 a pending connect to the saved
+            // identifier landed in 2.1 s, where a background scan found nothing in
+            // 12 s. Only the foreground, where an open scan can also catch a
+            // changed identifier, falls back to a scan.
+            guard UIApplication.shared.applicationState != .background else { return }
             scanTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { [weak self] _ in
                 Task { @MainActor in
                     guard let self, self.state == .connecting, self.peripheral?.identifier == p.identifier else { return }

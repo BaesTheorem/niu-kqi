@@ -43,7 +43,24 @@ enum BLECredsCache {
         if let d = try? JSONEncoder().encode(c) { Keychain.save(d, account: Keychain.bleCreds) }
     }
     static func load() -> NIUCloud.BLEInfo? {
-        Keychain.load(account: Keychain.bleCreds).flatMap { try? JSONDecoder().decode(NIUCloud.BLEInfo.self, from: $0) }
+        if let handed = importHandoff() { return handed }
+        return Keychain.load(account: Keychain.bleCreds).flatMap { try? JSONDecoder().decode(NIUCloud.BLEInfo.self, from: $0) }
+    }
+
+    /// A one-time hand-off from the Mac that already holds this scooter's
+    /// credentials (`secrets/scooter.json`): `Documents/ble-import.json`, with the
+    /// same keys as `bleinfo`, copied in by `devicectl device copy to` over the
+    /// developer link. It is moved into the Keychain and deleted at once, so the
+    /// phone can talk to the scooter without a NIU sign-in.
+    private static func importHandoff() -> NIUCloud.BLEInfo? {
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ble-import.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        try? FileManager.default.removeItem(at: url)
+        guard let c = try? JSONDecoder().decode(NIUCloud.BLEInfo.self, from: data),
+              c.blePassword?.count == 16 else { return nil }
+        save(c)
+        return c
     }
     static func clear() { Keychain.clear(account: Keychain.bleCreds) }
 }

@@ -25,6 +25,11 @@ final class ScooterPower {
         let started = Date()
         var entry = PowerLog.Entry(trigger: trigger,
                                    foreground: UIApplication.shared.applicationState == .active)
+        entry.sinceLaunchMs = Self.ms(since: AppLaunch.at)
+        // A start line, so an attempt the system cut short still shows up.
+        var startLine = entry
+        startLine.phase = "start"
+        PowerLog.append(startLine)
         let ble = ScooterBLE.shared
         NIUFields.load()
         if ble.creds == nil {
@@ -43,7 +48,9 @@ final class ScooterPower {
             message = "Open KQi Air once to sign in"
         } else {
             do {
-                try await ble.connectNow(timeout: 8)
+                // A first tap has no saved identifier yet and has to scan, which
+                // iOS runs slower in the background.
+                try await ble.connectNow(timeout: 12)
                 entry.route = ble.lastRoute
                 entry.connectedMs = Self.ms(since: started)
                 let before = try await readPower(ble)
@@ -53,8 +60,16 @@ final class ScooterPower {
                     poweredOn = true; ok = true; message = "Already on"
                 } else {
                     try await sendOn(ble, entry: &entry)
-                    try? await Task.sleep(nanoseconds: 400_000_000)
-                    let after = try await readPower(ble)
+                    // The dashboard takes a moment to boot, and one read at
+                    // 400 ms reported "off" for a power-on that worked. Poll the
+                    // bit instead, for up to 3 s.
+                    let wrote = Date()
+                    var after: (on: Bool?, battery: Int?) = (nil, nil)
+                    repeat {
+                        try? await Task.sleep(nanoseconds: 250_000_000)
+                        if let r = try? await readPower(ble) { after = r }
+                    } while after.on != true && Date().timeIntervalSince(wrote) < 3
+                    entry.confirmMs = Self.ms(since: wrote)
                     entry.after = after.on
                     battery = after.battery ?? battery
                     poweredOn = after.on
@@ -120,6 +135,11 @@ final class ScooterPower {
     private static func ms(since d: Date) -> Int { Int(Date().timeIntervalSince(d) * 1000) }
 }
 
+/// When this process started, to tell a cold background launch from a warm one.
+enum AppLaunch {
+    static let at = Date()
+}
+
 /// One line per power attempt in Documents/power-log.jsonl, so a run that failed
 /// on the Lock Screen can be read back afterwards:
 /// `xcrun devicectl device copy from --domain-type appDataContainer
@@ -127,14 +147,17 @@ final class ScooterPower {
 enum PowerLog {
     struct Entry: Codable {
         var at = Date()
+        var phase = "done"
         var trigger: String
         var foreground: Bool
         var creds = ""
         var route = ""
+        var sinceLaunchMs: Int?
         var connectedMs: Int?
         var before: Bool?
         var writes = 0
         var after: Bool?
+        var confirmMs: Int?
         var battery: Int?
         var ok = false
         var result = ""

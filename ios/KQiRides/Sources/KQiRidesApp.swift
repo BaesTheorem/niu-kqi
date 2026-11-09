@@ -5,6 +5,8 @@ struct KQiRidesApp: App {
     @StateObject private var app = AppState()
     @Environment(\.scenePhase) private var phase
 
+    init() { _ = AppLaunch.at }
+
     var body: some Scene {
         WindowGroup {
             RootView()
