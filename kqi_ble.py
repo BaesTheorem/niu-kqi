@@ -78,7 +78,34 @@ BITS = {
     },
     # The app's checkSmartLaunchMode tests 32768 on kick scooters (32 on mopeds).
     "ecu_bt_status": {32768: "NIU Link Unlock ON (phone-proximity auto unlock/lock)"},
+    # The app never decodes this word. Seen live: 0x8001 while the pack refused to charge
+    # (charger LED green, bms_soc_rt stuck at 100 with the dashboard showing low), 1 after a
+    # few power cycles brought charging back (2026-11-09).
+    "bms_bat_sta_rt": {1: "bit 1 (always set so far)", 32768: "bit 32768 (?) set while the pack refused to charge"},
 }
+
+# Dashboard error codes, from the KQi Air product manual's troubleshooting table (the
+# KQi3 manuals carry the same table). db_k_f_code reads 0 when nothing is raised.
+FAULTS = {
+    1: "controller power tube fault (dealer)", 2: "brake fault (check the brake lever)",
+    3: "accelerator fault (check the throttle)", 4: "controller overcurrent (dealer)",
+    5: "controller over-temperature (let it cool)", 6: "controller driving power fault (dealer)",
+    7: "controller communication fault / verification failure (dealer)",
+    8: "controller undervoltage or overvoltage (charge, or dealer)",
+    10: "motor locked rotor (dealer)", 11: "motor phase loss (dealer)", 12: "motor HALL fault (dealer)",
+    13: "motor over-temperature (let it cool)",
+    31: "battery MOS tube damaged (dealer)", 32: "battery wet (dealer)",
+    33: "battery open-circuit or cell imbalance (dealer)",
+    34: "battery low temperature: charging allowed 0-45 C, warm it up and retry",
+    35: "battery over-temperature (let it cool)", 37: "battery short-circuit protection (dealer)",
+    38: "battery charging overcurrent: disconnect the charger", 39: "battery discharging overcurrent (dealer)",
+    40: "battery over-charging warning (clears as charge drops)", 41: "battery over-discharged: charge it",
+    42: "battery communication fault / verification failure (dealer, speed limited to 6 km/h)",
+}
+
+# Fields the KQi Air returns as fixed placeholders over this link (2026-11-09, healthy
+# and faulty pack alike), so a reading of them is not a diagnosis.
+PLACEHOLDERS = {"bms_soh_rt": 0, "bms_dc_fl_t_rt": 255, "bms_accumulated_c_energy": 0, "db_k_estimated_mileage": 0}
 
 # Enumerated fields, labels from the app's "Lighting and Illumination" screen.  Off is set
 # with foc_k_decorative_light_cmd 3; the mode value it leaves behind is not confirmed yet.
@@ -261,7 +288,10 @@ class Scooter:
             left = deadline - time.monotonic()
             if left <= 0:
                 raise TimeoutError("no reply from scooter")
-            fr = await asyncio.wait_for(self.rx.get(), left)
+            try:
+                fr = await asyncio.wait_for(self.rx.get(), left)
+            except TimeoutError:
+                raise TimeoutError(f"no reply from scooter within {timeout:.0f}s") from None
             if headers is None or fr[:4].lower() in headers:
                 return fr
             self.pushes.append(fr)
@@ -413,6 +443,12 @@ def print_fields(values: dict, as_json: bool = False) -> None:
             extra = MODES[k].get(v, f"mode {v} (unlabeled)")
         if k == "ecu_bt_blekey_signal_threshold" and isinstance(v, int):
             extra = f"{v} dBm, NIU Link Unlock RSSI threshold"
+        if k == "db_k_f_code" and isinstance(v, int):
+            extra = "no fault" if v == 0 else FAULTS.get(v, f"code {v} (not in the manual's table)")
+        if k == "bms_c_cur_rt" and isinstance(v, int):
+            extra = "no charge current" if v == 0 else "charging? (unit unconfirmed)"
+        if k in PLACEHOLDERS and v == PLACEHOLDERS[k]:
+            extra = "placeholder: the KQi Air never reports this"
         if k == "db_k_estimated_mileage" and isinstance(v, int):
             extra = f"{v / 100:.2f} km (if /100)"
         if isinstance(v, int) and k not in ("bms_soc_rt",) and v >= 256 and not extra:
@@ -609,9 +645,56 @@ async def cmd_read(args):
 
     async def go(s: Scooter):
         out = {}
+        failed: list[str] = []
         for i in range(0, len(args.field), 5):
-            out.update(await s.read(args.field[i:i + 5]))
-        print_fields(out, args.json)
+            group = args.field[i:i + 5]
+            try:
+                out.update(await s.read(group))
+            except TimeoutError as e:
+                log(f"no reply for {', '.join(group)}: {e}")
+                failed.extend(group)
+        if out:
+            print_fields(out, args.json)
+        if failed:
+            log(f"kqi: {len(failed)} field(s) not read: {', '.join(failed)}")
+            return 1
+    return await with_scooter(args, go)
+
+
+async def cmd_poll(args):
+    """Read the same fields again and again over one connection; print each change."""
+    for n in args.field:
+        P.field(n)
+
+    async def go(s: Scooter):
+        log(f"polling {len(args.field)} field(s) every {args.every:g}s for {args.seconds:g}s; "
+            "a line prints when a value changes (plug the charger in, press buttons, ride)")
+        end = time.monotonic() + args.seconds
+        last: dict = {}
+        seen_pushes = 0
+        while True:
+            sample: dict = {}
+            for i in range(0, len(args.field), 5):
+                group = args.field[i:i + 5]
+                try:
+                    sample.update(await s.read(group))
+                except TimeoutError as e:
+                    log(f"{time.strftime('%H:%M:%S')} no reply for {', '.join(group)}: {e}")
+            changed = {k: v for k, v in sample.items() if args.all or last.get(k, object()) != v}
+            if changed:
+                stamp = time.strftime("%H:%M:%S")
+                if args.json:
+                    print(json.dumps({"time": stamp, **changed}), flush=True)
+                else:
+                    tag = "" if last else "  (first sample)"
+                    print(f"{stamp}  " + "  ".join(f"{k}={v}" for k, v in changed.items()) + tag, flush=True)
+            last.update(sample)
+            for fr in s.pushes[seen_pushes:]:
+                print(f"{time.strftime('%H:%M:%S')}  push {s.decode_push(fr)}", flush=True)
+            seen_pushes = len(s.pushes)
+            if time.monotonic() >= end:
+                break
+            await asyncio.sleep(max(0.2, min(args.every, end - time.monotonic())))
     return await with_scooter(args, go)
 
 
@@ -1068,6 +1151,7 @@ def main() -> int:
     s = sub.add_parser("find", help="find the scooter's advertisement"); s.add_argument("--seconds", type=float, default=10.0); s.set_defaults(fn=cmd_find)
     s = sub.add_parser("status", help="read the standard status set"); s.set_defaults(fn=cmd_status)
     s = sub.add_parser("read", help="read fields by name"); s.add_argument("field", nargs="+"); s.set_defaults(fn=cmd_read)
+    s = sub.add_parser("poll", help="re-read fields over one connection and print changes"); s.add_argument("field", nargs="+"); s.add_argument("--seconds", type=float, default=60.0); s.add_argument("--every", type=float, default=2.0); s.add_argument("--all", action="store_true", help="print every sample, not only changes"); s.set_defaults(fn=cmd_poll)
     s = sub.add_parser("write", help="write one field"); s.add_argument("field"); s.add_argument("value"); s.add_argument("--readback", action="store_true"); s.set_defaults(fn=cmd_write)
     for name in ("lock", "unlock", "on", "off", "factory-reset"):
         s = sub.add_parser(name); s.set_defaults(fn=cmd_simple, cmd_name=name, arg=None)

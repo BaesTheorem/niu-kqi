@@ -73,6 +73,7 @@ kqi unit 0|1                   # dashboard speed unit index (0/1; which is mph i
 kqi clock                      # writes db_k_timestamp = now
 kqi cmd 7 | kqi cmd --db 9     # any foc_k_cmd / db_k_cmd number
 kqi monitor --seconds 120      # frames the scooter pushes by itself
+kqi poll --seconds 75 bms_bat_sta_rt bms_c_cur_rt bms_soc_rt   # re-read over one link, print changes
 kqi raw <hex>                  # send one frame, print replies
 kqi fields [--all] [substr]    # the field table
 kqi firmware check             # installed firmware version of every controller
@@ -160,6 +161,22 @@ unlock over Bluetooth, which works whether or not the scooter has its own NFC ha
   when the paired phone is near, auto-lock when it leaves). The app's toggle writes
   `ecu_bt_cmd` 30/31 (7/8 on older products). `ecu_bt_blekey_signal_threshold` is the
   unlock RSSI threshold, -80 dBm on this scooter. Read live, not toggled.
+- Charging trouble (2026-11-09): with the charger LED solid green and the dashboard showing a
+  low battery, the scooter read `bms_soc_rt` 100, `bms_c_cur_rt` 0, `bms_bat_sta_rt` 0x8001,
+  `db_k_f_code` 0. A few power cycles brought charging back; it then read `bms_soc_rt` 91 and
+  `bms_bat_sta_rt` 1. So bit 32768 of `bms_bat_sta_rt` is the one live marker of the refused
+  charge (the app never decodes that word), and a stuck 100 % with a low dashboard is a BMS
+  state a reboot clears. `bms_soh_rt` 0, `bms_dc_fl_t_rt` 255, `bms_accumulated_c_energy` 0
+  and `db_k_estimated_mileage` 0 read the same in both states: placeholders, not symptoms.
+  `kqi poll` was added for this: one link, repeated reads, changes printed with a timestamp.
+- `db_k_realtime_status` reads 37 with the dashboard on and 22 in standby, so bit 32 tracks the
+  dashboard, not charging. With the dashboard on the scooter pushes three frames every few
+  seconds: `db_k_realtime_status` + `db_k_function_status`, a composite record under code
+  `060021` carrying `foc_k_rt_speed` and `bms_soc_rt`, and `ecu_bt_status` under `001EFF`.
+- Dashboard error codes (`db_k_f_code`) follow the product manual's table (`FAULTS` in
+  `kqi_ble.py`): 01-13 controller and motor, 31-42 battery. 34 is the cold lockout; the manual
+  allows charging at 0-45 C. The charger LED is red while charging and green at full, and a
+  green LED with a low pack means the pack refused the current, not that the charger is broken.
 - The app only interprets bit 1 of `db_k_realtime_status`. Bits 2/4/8/16 changed on their
   own in standby (26, then 22 a few minutes later, then 26 again about ten minutes after that,
   with `foc_k_realtime_status1` going 4096, 0, 4096 in step) and are unlabeled. A lock state
@@ -206,6 +223,10 @@ alerts once.
   device, then retry.
 - Older kick scooters (product type `ble_kick_scooter`) use the second header family and may
   come without a password; `--family 2` covers that path, untested.
+- `bms_bat_sta_rt` bit 32768 and `foc_k_realtime_status1` bit 16384 were both set only during
+  the refused-charge episode; neither has a label from the app. `bms_c_cur_rt` has never read
+  anything but 0, so its unit is unconfirmed. A `kqi poll` across a charger plug-in while the
+  pack charges normally would settle both.
 
 ## Files
 
