@@ -90,6 +90,44 @@ Bluetooth, with ride history and charts. Build it with `ios/scripts/build.sh` (a
 compile check), or `ios/scripts/build.sh --device` to sign for a real iPhone after you
 fill `ios/Config/Signing.xcconfig` with a team id.
 
+### Lock Screen power button
+
+A Lock Screen widget (circular or rectangular) and an iOS 18 control (the Lock
+Screen's bottom buttons, Control Center, or the Action button). Each one is a single
+button that turns the scooter's dashboard on without opening the app.
+
+- The button runs `PowerOnScooterIntent`, which conforms to `LiveActivityIntent`.
+  Apple documents that such an intent runs in the app's process, launched in the
+  background, and not in the widget extension ("Adding interactivity to widgets and
+  Live Activities"). The extension only draws state from the App Group.
+- The app reconnects to the scooter it last verified, by its saved CoreBluetooth
+  identifier, with no scan. It reads `db_k_realtime_status`, sends `db_k_cmd = 1`
+  only when bit 1 is clear, and reads the bit back. That write is what the NIU app's
+  power button sends for a kick scooter (`acc_on` in its command executor), with the
+  same 2 s wait for the ack and one retry while the link is up. The NIU app also
+  sends the write one more time at 5.5 s if nothing has answered; this app does not.
+  The button does not send "off".
+- After a tap the app leaves the link up with notifications off, as the NIU app
+  leaves its own link up. Closing it could look to NIU Link Unlock like the phone
+  leaving.
+- The scooter's Bluetooth credentials are cached in the Keychain, so a tap needs no
+  NIU cloud request. Open the app one time, signed in, with the scooter connected,
+  before the first tap: that session caches the credentials and saves the scooter's
+  identifier.
+- On a locked phone a widget button waits for Face ID, which is Apple's rule. Apple
+  lets an app require an unlock before a control acts. This control does not ask for
+  one.
+- A sleeping scooter does not advertise, so no Bluetooth command can wake it. Only
+  its power button can.
+- Each tap appends one line to `Documents/power-log.jsonl` in the app's container.
+  Read it from the Mac with:
+
+```sh
+xcrun devicectl device copy from --device <UDID> --domain-type appDataContainer \
+  --domain-identifier com.alexhedtke.KQiRides --source Documents/power-log.jsonl \
+  --destination power-log.jsonl
+```
+
 ### Tap an NFC sticker to unlock
 
 The app exposes a URL scheme and two App Intents, so a phone action can unlock the

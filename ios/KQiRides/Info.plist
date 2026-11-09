@@ -39,9 +39,15 @@
 	<string>KQi Rides talks to your scooter over Bluetooth to read status and change settings.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>KQi Rides talks to your scooter over Bluetooth to read status and change settings.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIAppFonts</key>
 	<array>
 		<string>MaterialSymbolsSharp.ttf</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>

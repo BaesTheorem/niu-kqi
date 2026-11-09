@@ -1,5 +1,6 @@
 import Foundation
 import CoreBluetooth
+import UIKit
 
 /// Live BLE link to the scooter, ported from the `Scooter` session in `kqi_ble.py`.
 ///
@@ -8,6 +9,21 @@ import CoreBluetooth
 /// handshake comes from the cloud (`bleinfo`) rather than from the scan.
 @MainActor
 final class ScooterBLE: NSObject, ObservableObject {
+
+    /// One session per process. The app's screens and the Lock Screen power
+    /// intent share it, so they never run two handshakes on the same link.
+    static let shared = ScooterBLE()
+
+    /// Identifier of the scooter this phone last verified with the account's
+    /// BLE password. Saved only after a successful handshake, so it always
+    /// names Alex's own scooter and never a stranger's that happened to answer.
+    private static let savedScooterKey = "kqi.verifiedPeripheral"
+    static func forgetSavedScooter() { UserDefaults.standard.removeObject(forKey: savedScooterKey) }
+
+    /// How the last connection found the scooter: "already connected",
+    /// "saved id" or "scan". Recorded in the power log.
+    private(set) var lastRoute = ""
+    private var savedTried = false
 
     enum State: Equatable {
         case idle, poweredOff, unauthorized, scanning, connecting, handshaking, ready
@@ -58,7 +74,7 @@ final class ScooterBLE: NSObject, ObservableObject {
     private var wantsConnection = false
     private var retryTask: Task<Void, Never>?
 
-    override init() {
+    private override init() {
         super.init()
         central = CBCentralManager(delegate: self, queue: .main)
     }
@@ -73,6 +89,36 @@ final class ScooterBLE: NSObject, ObservableObject {
     func connect() async {
         wantsConnection = true
         beginScan()
+    }
+
+    /// Connect and wait for the verified link, or throw once `timeout` passes.
+    /// The app's screens use the open-ended `connect()`; a Lock Screen tap needs
+    /// an answer within seconds.
+    func connectNow(timeout: TimeInterval) async throws {
+        if state == .ready { return }
+        await connect()
+        let end = Date().addingTimeInterval(timeout)
+        while Date() < end {
+            if state == .ready { return }
+            if state == .unauthorized { throw NIUProto.Err(msg: "Bluetooth not allowed") }
+            if state == .poweredOff, central.state == .poweredOff { throw NIUProto.Err(msg: "Bluetooth is off") }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        throw NIUProto.Err(msg: "Scooter not found. Is it awake?")
+    }
+
+    /// The verified scooter, if iOS can hand it back without a scan: either a
+    /// link that is already up (the NIU app, or this app a moment ago) or the
+    /// saved identifier. iOS keeps both across launches.
+    private func savedScooter() -> (CBPeripheral, String)? {
+        guard let s = UserDefaults.standard.string(forKey: Self.savedScooterKey),
+              let id = UUID(uuidString: s) else { return nil }
+        let svcs = NIUProto.services.keys.map { CBUUID(string: $0) }
+        if let p = central.retrieveConnectedPeripherals(withServices: svcs).first(where: { $0.identifier == id }) {
+            return (p, "already connected")
+        }
+        if let p = central.retrievePeripherals(withIdentifiers: [id]).first { return (p, "saved id") }
+        return nil
     }
 
     /// Start a scan if everything needed is in place. Called again whenever one
@@ -94,9 +140,45 @@ final class ScooterBLE: NSObject, ObservableObject {
         }
         guard creds != nil else { return }   // bootstrap will call back in
 
+        // A pending connect to a known peripheral needs no scan, works in the
+        // background, and lands as soon as the scooter is in range. It never
+        // times out on its own, so give it a few seconds before scanning.
+        if !savedTried, let (p, route) = savedScooter() {
+            savedTried = true
+            lastRoute = route
+            note("connecting to the saved scooter (\(route))")
+            peripheral = p
+            p.delegate = self
+            state = .connecting
+            if p.state == .connected {
+                // Already up (parked by this app, or held by the NIU app):
+                // skip straight to discovery instead of waiting on a callback
+                // that an open link may not send again.
+                p.discoverServices(NIUProto.services.keys.map { CBUUID(string: $0) })
+            } else {
+                central.connect(p)
+            }
+            scanTimer?.invalidate()
+            scanTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.state == .connecting, self.peripheral?.identifier == p.identifier else { return }
+                    self.note("saved scooter did not answer; scanning")
+                    self.central.cancelPeripheralConnection(p)
+                    self.peripheral = nil
+                    self.state = .idle
+                    self.beginScan()
+                }
+            }
+            return
+        }
+
         state = .scanning
+        lastRoute = "scan"
         note("scanning for \(creds?.bleName ?? "NIU device")")
-        central.scanForPeripherals(withServices: nil)
+        // iOS returns nothing from an unfiltered scan while the app is in the
+        // background, so filter on the NIU service UUIDs there.
+        let inBackground = UIApplication.shared.applicationState == .background
+        central.scanForPeripherals(withServices: inBackground ? NIUProto.services.keys.map { CBUUID(string: $0) } : nil)
         scanTimer?.invalidate()
         scanTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { [weak self] _ in
             Task { @MainActor in
@@ -115,6 +197,7 @@ final class ScooterBLE: NSObject, ObservableObject {
         retryTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard let self, !Task.isCancelled, self.wantsConnection, self.state != .ready else { return }
+            self.savedTried = false
             self.beginScan()
         }
     }
@@ -125,12 +208,37 @@ final class ScooterBLE: NSObject, ObservableObject {
     /// Stop looking, but only when the user says so.
     func disconnect() {
         wantsConnection = false
+        savedTried = false
         retryTask?.cancel(); retryTask = nil
         scanTimer?.invalidate()
         central.stopScan()
         if let p = peripheral { central.cancelPeripheralConnection(p) }
         peripheral = nil; notifyChar = nil; writeChar = nil; key = ""
         state = .idle
+    }
+
+    /// Stop using the link without closing it, the way the NIU app leaves its
+    /// link up after a power-on. Closing it can read to the scooter as the
+    /// phone walking away, which NIU Link Unlock answers with a lock. Turning
+    /// notifications off keeps a suspended app from being woken by the
+    /// scooter's status pushes every few seconds; the next `connect()` finds
+    /// the open link through `savedScooter()` and verifies again.
+    func park() {
+        wantsConnection = false
+        savedTried = false
+        retryTask?.cancel(); retryTask = nil
+        scanTimer?.invalidate()
+        central.stopScan()
+        if let p = peripheral {
+            if p.state == .connected {
+                if let c = notifyChar { p.setNotifyValue(false, for: c) }
+            } else {
+                central.cancelPeripheralConnection(p)   // a pending connect that never landed
+                peripheral = nil
+            }
+        }
+        notifyChar = nil; writeChar = nil; key = ""
+        if state != .unauthorized, state != .poweredOff { state = .idle }
     }
 
     /// Backgrounding should stop the radio work without forgetting the intent.
@@ -227,6 +335,10 @@ final class ScooterBLE: NSObject, ObservableObject {
             key = (aes.count == 16 || aes.count == 32) ? aes : ""
         }
         note("verified with the scooter")
+        if let id = peripheral?.identifier.uuidString {
+            UserDefaults.standard.set(id, forKey: Self.savedScooterKey)
+        }
+        savedTried = false
         state = .ready
     }
 
@@ -234,7 +346,7 @@ final class ScooterBLE: NSObject, ObservableObject {
 
     private var families: [Int] { bleVer >= 21 ? [1, 10] : [1] }
 
-    func read(_ names: [String]) async throws -> [(String, NIUProto.Value)] {
+    func read(_ names: [String], replyTimeout: TimeInterval = 8) async throws -> [(String, NIUProto.Value)] {
         guard state == .ready else { throw NIUProto.Err(msg: "not connected") }
         var last: Error = NIUProto.Err(msg: "read failed")
         for fam in families {
@@ -248,7 +360,7 @@ final class ScooterBLE: NSObject, ObservableObject {
                 try await send(try NIUProto.buildRead(names, key: key, family: fam))
                 var frames: [String] = []
                 repeat {
-                    frames.append(try await nextFrame([h.readAck.0, h.readAck.1, h.readErr.0, h.readErr.1]))
+                    frames.append(try await nextFrame([h.readAck.0, h.readAck.1, h.readErr.0, h.readErr.1], timeout: replyTimeout))
                 } while !NIUProto.isLastFrame(frames.last!)
                 return try NIUProto.parseReadFrames(frames, names, key: key, family: fam)
             } catch { last = error }
@@ -257,7 +369,7 @@ final class ScooterBLE: NSObject, ObservableObject {
     }
 
     @discardableResult
-    func write(_ values: [(String, Any)]) async throws -> String {
+    func write(_ values: [(String, Any)], replyTimeout: TimeInterval = 8) async throws -> String {
         guard state == .ready else { throw NIUProto.Err(msg: "not connected") }
         var last: Error = NIUProto.Err(msg: "write failed")
         for fam in families {
@@ -271,7 +383,7 @@ final class ScooterBLE: NSObject, ObservableObject {
                 try await send(try NIUProto.buildWrite(values, key: key, family: fam))
                 var frames: [String] = []
                 repeat {
-                    frames.append(try await nextFrame([h.writeAck.0, h.writeAck.1, h.writeErr.0, h.writeErr.1]))
+                    frames.append(try await nextFrame([h.writeAck.0, h.writeAck.1, h.writeErr.0, h.writeErr.1], timeout: replyTimeout))
                 } while !NIUProto.isLastFrame(frames.last!)
                 return try NIUProto.parseWriteFrames(frames, key: key, family: fam)
             } catch { last = error }
@@ -315,9 +427,13 @@ extension ScooterBLE: CBCentralManagerDelegate, CBPeripheralDelegate {
         Task { @MainActor in
             guard self.state == .scanning else { return }
             let want = self.creds?.bleName ?? ""
-            let match = (!want.isEmpty && name.caseInsensitiveCompare(want) == .orderedSame)
-                || name.uppercased().hasPrefix("NIU")
-                || uuids.contains(where: { NIUProto.services.keys.contains($0) })
+            let niuService = uuids.contains(where: { NIUProto.services.keys.contains($0) })
+            // With the account's BLE name on file, take only that scooter. A
+            // background scan can drop the name, so a nameless NIU service
+            // match still counts; the handshake rejects any other scooter.
+            let match = want.isEmpty
+                ? (name.uppercased().hasPrefix("NIU") || niuService)
+                : (name.caseInsensitiveCompare(want) == .orderedSame || (name.isEmpty && niuService))
             guard match else { return }
             self.scanTimer?.invalidate()
             central.stopScan()
@@ -346,6 +462,7 @@ extension ScooterBLE: CBCentralManagerDelegate, CBPeripheralDelegate {
     nonisolated func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         Task { @MainActor in
             self.note("disconnected")
+            if let cur = self.peripheral, cur.identifier != peripheral.identifier { return }
             self.peripheral = nil; self.notifyChar = nil; self.writeChar = nil; self.key = ""
             if self.state == .ready { self.state = .idle }
             if self.wantsConnection { self.scheduleRetry(after: 5) }

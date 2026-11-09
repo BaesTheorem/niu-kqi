@@ -5,9 +5,12 @@ import UIKit
 /// Tiny Keychain wrapper: the NIU session token is a bearer credential for the
 /// account, so it does not belong in UserDefaults.
 enum Keychain {
-    private static let account = "niu.session"
+    static let session = "niu.session"
+    /// The scooter's BLE credentials from `bleinfo`, kept so a Lock Screen tap
+    /// can connect without a cloud round trip or a live NIU session.
+    static let bleCreds = "niu.blecreds"
 
-    static func save(_ data: Data) {
+    static func save(_ data: Data, account: String = session) {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                 kSecAttrAccount as String: account]
         SecItemDelete(q as CFDictionary)
@@ -17,7 +20,7 @@ enum Keychain {
         SecItemAdd(add as CFDictionary, nil)
     }
 
-    static func load() -> Data? {
+    static func load(account: String = session) -> Data? {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                 kSecAttrAccount as String: account,
                                 kSecReturnData as String: true,
@@ -27,10 +30,22 @@ enum Keychain {
         return out as? Data
     }
 
-    static func clear() {
+    static func clear(account: String = session) {
         SecItemDelete([kSecClass as String: kSecClassGenericPassword,
                        kSecAttrAccount as String: account] as CFDictionary)
     }
+}
+
+/// The BLE credentials, cached in the Keychain. Readable after the first unlock
+/// since boot, which is what a tap on a locked phone's widget needs.
+enum BLECredsCache {
+    static func save(_ c: NIUCloud.BLEInfo) {
+        if let d = try? JSONEncoder().encode(c) { Keychain.save(d, account: Keychain.bleCreds) }
+    }
+    static func load() -> NIUCloud.BLEInfo? {
+        Keychain.load(account: Keychain.bleCreds).flatMap { try? JSONDecoder().decode(NIUCloud.BLEInfo.self, from: $0) }
+    }
+    static func clear() { Keychain.clear(account: Keychain.bleCreds) }
 }
 
 @MainActor
@@ -57,7 +72,9 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(units.rawValue, forKey: "units") }
     }
 
-    let ble = ScooterBLE()
+    /// The same session the Lock Screen power intent uses, so the two never run
+    /// competing handshakes on one link.
+    let ble = ScooterBLE.shared
 
     /// A weak handle so an App Intent (Siri, the Action button, an NFC-triggered
     /// Shortcut) can reach the one live app state. The app process is launched
@@ -115,6 +132,7 @@ final class AppState: ObservableObject {
 
     func restore() {
         NIUFields.load()
+        if ble.creds == nil { ble.creds = BLECredsCache.load() }
         if let d = Keychain.load(), let s = try? JSONDecoder().decode(NIUCloud.Session.self, from: d) {
             session = s
             Task { await bootstrap() }
@@ -136,6 +154,8 @@ final class AppState: ObservableObject {
 
     func logOut() {
         Keychain.clear()
+        BLECredsCache.clear()
+        ScooterBLE.forgetSavedScooter()
         session = nil; scooter = nil; rides = []; live = [:]
         ble.disconnect()
     }
@@ -159,7 +179,12 @@ final class AppState: ObservableObject {
             let list = try await NIUCloud.shared.scooters(token: token)
             scooter = list.first
             if let sn = scooter?.snId {
-                ble.creds = try? await NIUCloud.shared.bleInfo(token: token, sn: sn)
+                if let fresh = try? await NIUCloud.shared.bleInfo(token: token, sn: sn) {
+                    ble.creds = fresh
+                    BLECredsCache.save(fresh)
+                } else if ble.creds == nil {
+                    ble.creds = BLECredsCache.load()
+                }
                 // Credentials usually land after the first auto-connect attempt
                 // has already bailed, so poke the state machine now that the
                 // precondition it was missing exists.
@@ -271,6 +296,8 @@ final class AppState: ObservableObject {
                 for (k, v) in one where Self.isPlausible(k, v) { live[k] = v }
             }
         }
+        ScooterPower.publish(poweredOn: live["db_k_realtime_status"]?.intValue.map { $0 & 1 == 1 },
+                             battery: live["bms_soc_rt"]?.intValue, message: nil, ok: true)
     }
 
     /// Change the proximity-unlock range. Cloud-side, but the server rejects it

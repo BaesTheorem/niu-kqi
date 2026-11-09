@@ -25,6 +25,16 @@ targets:
     sources:
       - path: KQiRides/Sources
       - path: KQiRides/Resources
+      - path: Shared
+    dependencies:
+      - target: KQiRidesWidget
+    # The App Group is how the Lock Screen widget reads the last power state and
+    # battery level that the app wrote.
+    entitlements:
+      path: KQiRides/KQiRides.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.alexhedtke.KQiRides
     info:
       path: KQiRides/Info.plist
       properties:
@@ -54,3 +64,44 @@ targets:
         # failing gracefully, so it is not optional.
         NSBluetoothAlwaysUsageDescription: KQi Rides talks to your scooter over Bluetooth to read status and change settings.
         NSBluetoothPeripheralUsageDescription: KQi Rides talks to your scooter over Bluetooth to read status and change settings.
+        # The widget's power button runs in this app's process, launched in the
+        # background. Without bluetooth-central, CoreBluetooth holds every event
+        # until the app comes to the foreground, so the tap would do nothing.
+        UIBackgroundModes:
+          - bluetooth-central
+        # The power intent conforms to LiveActivityIntent, which is what moves
+        # it from the widget process into the app. The app starts no Live
+        # Activity. Apple does not say this key is required for that; it is
+        # set because the protocol belongs to the Live Activities capability.
+        NSSupportsLiveActivities: true
+
+  # Lock Screen widget (circular and rectangular) and an iOS 18 control, both a
+  # single button that runs PowerOnScooterIntent. The extension draws state; it
+  # never talks to the scooter.
+  KQiRidesWidget:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: Widget
+      - path: Shared
+    entitlements:
+      path: Widget/KQiRidesWidget.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.alexhedtke.KQiRides
+    info:
+      path: Widget/Info.plist
+      properties:
+        CFBundleDisplayName: KQi Air
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.alexhedtke.KQiRides.Widget
+        # Shared/PowerOnIntent.swift compiles in both targets; this flag keeps
+        # the Bluetooth code out of the extension.
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WIDGET_EXTENSION"
+        SKIP_INSTALL: YES

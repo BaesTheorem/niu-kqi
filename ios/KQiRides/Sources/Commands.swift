@@ -42,9 +42,9 @@ enum Cmd {
 
 extension ScooterBLE {
     /// Send one of the named commands.
-    func run(_ name: String) async throws {
+    func run(_ name: String, replyTimeout: TimeInterval = 8) async throws {
         guard let c = Cmd.table[name] else { throw NIUProto.Err(msg: "unknown command '\(name)'") }
-        try await write([(c.field, c.value)])
+        try await write([(c.field, c.value)], replyTimeout: replyTimeout)
     }
 
     /// Regen braking level 0-3, encoded as two bits of the FOC status word.

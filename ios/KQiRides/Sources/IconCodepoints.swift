@@ -31,6 +31,7 @@ enum IconGlyph {
         "receipt_long": "\u{EF6E}",
         "refresh": "\u{E5D5}",
         "restart_alt": "\u{F053}",
+        "scan": "\u{F74E}",
         "schedule": "\u{E192}",
         "send": "\u{E163}",
         "speed": "\u{E9E4}",
