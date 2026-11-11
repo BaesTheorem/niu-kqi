@@ -48,8 +48,25 @@ extension ScooterBLE {
     }
 
     /// Regen braking level 0-3, encoded as two bits of the FOC status word.
+    ///
+    /// The write replaces the whole word, so the speed unit, kick-start, cruise,
+    /// custom mode and fast lock bits are written back from the value that was
+    /// read. A read that fails must stop the write: falling back to 0 would
+    /// clear every one of them. A reply that belongs to another request parses
+    /// as a number too, so two reads have to agree before anything is sent.
     func setEBS(_ level: Int) async throws {
-        let cur = try await read(["foc_k_function_status1"]).first?.1.intValue ?? 0
+        guard (0...3).contains(level) else { throw NIUProto.Err(msg: "regen level must be 0 to 3") }
+        func word() async throws -> Int {
+            guard let n = try await read(["foc_k_function_status1"]).first?.1.intValue,
+                  (0...0x00FF_FFFF).contains(n) else {
+                throw NIUProto.Err(msg: "could not read the settings word; nothing was changed")
+            }
+            return n
+        }
+        let cur = try await word()
+        guard try await word() == cur else {
+            throw NIUProto.Err(msg: "the settings word changed between two reads; nothing was changed")
+        }
         var new = cur & ~(256 | 512)
         if level == 1 || level == 3 { new |= 256 }
         if level == 2 || level == 3 { new |= 512 }
